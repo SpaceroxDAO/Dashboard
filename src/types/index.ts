@@ -450,6 +450,23 @@ export interface KiraReflections {
   dreams: string | null;
 }
 
+// Kanban Types
+export type KanbanColumnId = 'inbox' | 'in-progress' | 'backlog' | 'blocked' | 'done';
+export type TaskStatus = 'incomplete' | 'in-progress' | 'done';
+
+export interface KanbanTask {
+  id: string;
+  agentId: string;
+  title: string;
+  status: TaskStatus;
+  priority: 'high' | 'medium' | 'low';
+  category?: string;
+  column: KanbanColumnId;
+  description?: string;
+}
+
+export type KanbanColumns = Record<KanbanColumnId, KanbanTask[]>;
+
 // DNA Types
 export interface DNAFile {
   id: string;

@@ -4,6 +4,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { createHash } from 'crypto';
 
 const execFileAsync = promisify(execFile);
 
@@ -227,6 +228,419 @@ function parseTasksFile(content: string) {
 
   return tasks;
 }
+
+// ─── Kanban: Task File AST + Mutation Endpoints ───
+
+type KanbanColumnId = 'inbox' | 'in-progress' | 'backlog' | 'blocked' | 'done';
+type TaskStatusMark = ' ' | 'x' | '~';
+
+interface ASTNode {
+  type: 'heading' | 'task' | 'text' | 'subheading';
+  raw: string; // original line(s)
+  // heading/subheading fields
+  level?: number;
+  title?: string;
+  // task fields
+  taskStatus?: TaskStatusMark;
+  taskTitle?: string;
+  taskId?: string;
+  priority?: 'high' | 'medium' | 'low';
+  category?: string;
+  column?: KanbanColumnId;
+  // subheading priority tracking
+  subPriority?: 'high' | 'medium' | 'low';
+  subCategory?: string;
+}
+
+function makeTaskId(agentId: string, title: string): string {
+  return createHash('sha256')
+    .update(`${agentId}:${title}`)
+    .digest('hex')
+    .slice(0, 12);
+}
+
+/** Determine which kanban column a ## section maps to */
+function sectionToColumn(sectionTitle: string): KanbanColumnId | null {
+  const lower = sectionTitle.toLowerCase().trim();
+  if (lower === 'inbox') return 'inbox';
+  if (lower === 'in progress') return 'in-progress';
+  if (lower === 'backlog') return 'backlog';
+  if (lower === 'blocked') return 'blocked';
+  if (lower.startsWith('done')) return 'done';
+  // "New This Build Cycle" sections → done (they contain completed tasks)
+  if (lower.startsWith('new this build cycle')) return 'done';
+  return null;
+}
+
+function columnToSectionTitle(col: KanbanColumnId): string {
+  switch (col) {
+    case 'inbox': return 'Inbox';
+    case 'in-progress': return 'In Progress';
+    case 'backlog': return 'Backlog';
+    case 'blocked': return 'Blocked';
+    case 'done': return 'Done';
+  }
+}
+
+/** Parse tasks.md into an AST of nodes, preserving all original lines */
+function parseTaskFileAST(content: string, agentId: string): ASTNode[] {
+  const lines = content.split('\n');
+  const nodes: ASTNode[] = [];
+  let currentColumn: KanbanColumnId | null = null;
+  let currentPriority: 'high' | 'medium' | 'low' = 'medium';
+  let currentCategory = '';
+
+  for (const line of lines) {
+    // ## section header
+    if (line.startsWith('## ')) {
+      const title = line.replace(/^##\s*/, '').trim();
+      currentColumn = sectionToColumn(title);
+      currentPriority = 'medium';
+      currentCategory = title;
+      nodes.push({ type: 'heading', raw: line, level: 2, title, column: currentColumn ?? undefined });
+      continue;
+    }
+
+    // ### subsection header
+    if (line.startsWith('### ')) {
+      const header = line.toLowerCase();
+      if (header.includes('high')) currentPriority = 'high';
+      else if (header.includes('medium')) currentPriority = 'medium';
+      else if (header.includes('low')) currentPriority = 'low';
+      const catMatch = line.match(/\(([^)]+)\)/);
+      if (catMatch) currentCategory = catMatch[1];
+      nodes.push({
+        type: 'subheading', raw: line, level: 3, title: line.replace(/^###\s*/, '').trim(),
+        subPriority: currentPriority, subCategory: currentCategory,
+      });
+      continue;
+    }
+
+    // Task line: - [ ] or - [x] or - [~]
+    const taskMatch = line.match(/^-\s*\[([ x~])\]\s*(.+)$/);
+    if (taskMatch && currentColumn) {
+      const [, status, rawTitle] = taskMatch;
+      const cleanTitle = rawTitle.replace(/\*\*/g, '').replace(/\s*—.*$/, '').trim();
+      const taskId = makeTaskId(agentId, cleanTitle);
+      nodes.push({
+        type: 'task',
+        raw: line,
+        taskStatus: status as TaskStatusMark,
+        taskTitle: cleanTitle,
+        taskId,
+        priority: currentPriority,
+        category: currentCategory,
+        column: currentColumn,
+      });
+      continue;
+    }
+
+    // Everything else (comments, blank lines, other text)
+    nodes.push({ type: 'text', raw: line });
+  }
+
+  return nodes;
+}
+
+/** Serialize AST back to markdown string */
+function serializeAST(nodes: ASTNode[]): string {
+  return nodes.map(n => n.raw).join('\n');
+}
+
+/** Build kanban columns from AST for API response */
+function astToKanbanColumns(nodes: ASTNode[], agentId: string) {
+  const columns: Record<KanbanColumnId, Array<{
+    id: string; agentId: string; title: string; status: string;
+    priority: string; category: string; column: KanbanColumnId;
+  }>> = {
+    'inbox': [],
+    'in-progress': [],
+    'backlog': [],
+    'blocked': [],
+    'done': [],
+  };
+
+  for (const node of nodes) {
+    if (node.type === 'task' && node.column && node.taskId) {
+      let status: string = 'incomplete';
+      if (node.taskStatus === 'x') status = 'done';
+      else if (node.taskStatus === '~') status = 'in-progress';
+
+      columns[node.column].push({
+        id: node.taskId,
+        agentId,
+        title: node.taskTitle || '',
+        status,
+        priority: node.priority || 'medium',
+        category: node.category || '',
+        column: node.column,
+      });
+    }
+  }
+
+  return columns;
+}
+
+function computeFileHash(content: string): string {
+  return createHash('md5').update(content).digest('hex').slice(0, 16);
+}
+
+/** Simple in-memory mutex per agent to prevent concurrent writes */
+const fileMutexes: Record<string, Promise<void>> = {};
+
+async function withFileMutex<T>(agentId: string, fn: () => Promise<T>): Promise<T> {
+  const key = `task-${agentId}`;
+  const prev = fileMutexes[key] || Promise.resolve();
+  let resolve: () => void;
+  fileMutexes[key] = new Promise<void>(r => { resolve = r; });
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    resolve!();
+  }
+}
+
+/** Read tasks file content for an agent */
+async function readTasksFile(agentId: string): Promise<string> {
+  if (agentId === 'kira') {
+    const content = await sshReadFile('memory/tasks.md');
+    return content || '';
+  }
+  return fs.readFile(path.join(MEMORY_PATH, 'tasks.md'), 'utf-8').catch(() => '');
+}
+
+/** Write tasks file content for an agent */
+async function writeTasksFile(agentId: string, content: string): Promise<void> {
+  if (agentId === 'kira') {
+    await sshWriteFile('memory/tasks.md', content);
+    return;
+  }
+  await fs.writeFile(path.join(MEMORY_PATH, 'tasks.md'), content, 'utf-8');
+}
+
+/** Write a file to Kira's machine via SSH */
+async function sshWriteFile(relativePath: string, content: string): Promise<void> {
+  const winPath = `${KIRA_BASE_PATH}\\${relativePath.replace(/\//g, '\\\\')}`;
+  // Use PowerShell to write content via stdin pipe
+  const escaped = content.replace(/'/g, "''");
+  await sshExec(`powershell -Command "Set-Content -Path '${winPath}' -Value '${escaped}' -Encoding UTF8"`);
+}
+
+// GET /api/tasks/kanban — returns kanban columns
+app.get('/api/tasks/kanban', async (req, res) => {
+  try {
+    const agentId = (req.query.agentId as string) || 'finn';
+    const content = await readTasksFile(agentId);
+    const ast = parseTaskFileAST(content, agentId);
+    const columns = astToKanbanColumns(ast, agentId);
+    const fileHash = computeFileHash(content);
+    res.json({ columns, fileHash });
+  } catch (error) {
+    console.error('Kanban fetch error:', error);
+    res.status(500).json({ error: 'Failed to load kanban data' });
+  }
+});
+
+// PATCH /api/tasks/:taskId/move — move task between columns
+app.patch('/api/tasks/:taskId/move', async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const { agentId = 'finn', targetColumn, targetIndex } = req.body as {
+      agentId: string; targetColumn: KanbanColumnId; targetIndex?: number;
+    };
+
+    if (!targetColumn) {
+      return res.status(400).json({ error: 'targetColumn is required' });
+    }
+
+    const result = await withFileMutex(agentId, async () => {
+      const content = await readTasksFile(agentId);
+      const ast = parseTaskFileAST(content, agentId);
+
+      // Find the task node
+      const taskIdx = ast.findIndex(n => n.type === 'task' && n.taskId === taskId);
+      if (taskIdx === -1) {
+        throw new Error('Task not found');
+      }
+
+      const taskNode = ast[taskIdx];
+      const taskLine = taskNode.raw;
+
+      // Remove from current position
+      ast.splice(taskIdx, 1);
+
+      // Update checkbox status based on target column
+      let updatedLine = taskLine;
+      if (targetColumn === 'done') {
+        updatedLine = taskLine.replace(/\[([ ~])\]/, '[x]');
+      } else if (taskNode.column === 'done') {
+        updatedLine = taskLine.replace(/\[x\]/, '[ ]');
+      }
+
+      // Find target section insertion point
+      let insertIdx = -1;
+      let tasksInTargetSection = 0;
+      const targetSectionTitle = columnToSectionTitle(targetColumn);
+
+      for (let i = 0; i < ast.length; i++) {
+        const node = ast[i];
+        if (node.type === 'heading' && node.column === targetColumn) {
+          // Found the target section header - find end of section
+          insertIdx = i + 1;
+          // Skip past comments and blank lines right after header
+          while (insertIdx < ast.length && ast[insertIdx].type === 'text') {
+            insertIdx++;
+          }
+          // Count existing tasks in this section and find insert position
+          let taskCount = 0;
+          for (let j = insertIdx; j < ast.length; j++) {
+            if (ast[j].type === 'heading') break; // next section
+            if (ast[j].type === 'task') {
+              taskCount++;
+              if (targetIndex !== undefined && taskCount > targetIndex) break;
+              tasksInTargetSection = j + 1;
+            }
+          }
+          if (targetIndex !== undefined && targetIndex < taskCount) {
+            // Insert at specific position among tasks
+            let seen = 0;
+            for (let j = insertIdx; j < ast.length; j++) {
+              if (ast[j].type === 'heading') break;
+              if (ast[j].type === 'task') {
+                if (seen === targetIndex) { insertIdx = j; break; }
+                seen++;
+              }
+            }
+          } else {
+            // Insert after last task in section (or after header if no tasks)
+            insertIdx = tasksInTargetSection > 0 ? tasksInTargetSection : insertIdx;
+          }
+          break;
+        }
+      }
+
+      if (insertIdx === -1) {
+        // Target section doesn't exist — create it
+        ast.push({ type: 'text', raw: '' });
+        ast.push({ type: 'heading', raw: `## ${targetSectionTitle}`, level: 2, title: targetSectionTitle, column: targetColumn });
+        insertIdx = ast.length;
+      }
+
+      // Insert the task at the target position
+      const updatedNode: ASTNode = { ...taskNode, raw: updatedLine, column: targetColumn };
+      if (targetColumn === 'done') updatedNode.taskStatus = 'x';
+      else if (taskNode.column === 'done') updatedNode.taskStatus = ' ';
+      ast.splice(insertIdx, 0, updatedNode);
+
+      const newContent = serializeAST(ast);
+      await writeTasksFile(agentId, newContent);
+      return { fileHash: computeFileHash(newContent) };
+    });
+
+    res.json({ success: true, fileHash: result.fileHash });
+  } catch (error: any) {
+    console.error('Task move error:', error);
+    res.status(error.message === 'Task not found' ? 404 : 500)
+      .json({ error: error.message || 'Failed to move task' });
+  }
+});
+
+// PATCH /api/tasks/:taskId/status — toggle task checkbox
+app.patch('/api/tasks/:taskId/status', async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const { agentId = 'finn', status } = req.body as {
+      agentId: string; status: 'done' | 'incomplete' | 'in-progress';
+    };
+
+    const result = await withFileMutex(agentId, async () => {
+      const content = await readTasksFile(agentId);
+      const ast = parseTaskFileAST(content, agentId);
+
+      const taskNode = ast.find(n => n.type === 'task' && n.taskId === taskId);
+      if (!taskNode) throw new Error('Task not found');
+
+      const markMap: Record<string, string> = { 'done': 'x', 'incomplete': ' ', 'in-progress': '~' };
+      const newMark = markMap[status] || ' ';
+      taskNode.raw = taskNode.raw.replace(/\[([ x~])\]/, `[${newMark}]`);
+      taskNode.taskStatus = newMark as TaskStatusMark;
+
+      const newContent = serializeAST(ast);
+      await writeTasksFile(agentId, newContent);
+      return { fileHash: computeFileHash(newContent) };
+    });
+
+    res.json({ success: true, fileHash: result.fileHash });
+  } catch (error: any) {
+    console.error('Task status error:', error);
+    res.status(error.message === 'Task not found' ? 404 : 500)
+      .json({ error: error.message || 'Failed to update task status' });
+  }
+});
+
+// POST /api/tasks — create a new task
+app.post('/api/tasks', async (req, res) => {
+  try {
+    const { agentId = 'finn', title, column = 'inbox', priority } = req.body as {
+      agentId: string; title: string; column?: KanbanColumnId; priority?: string;
+    };
+
+    if (!title) {
+      return res.status(400).json({ error: 'title is required' });
+    }
+
+    const result = await withFileMutex(agentId, async () => {
+      const content = await readTasksFile(agentId);
+      const ast = parseTaskFileAST(content, agentId);
+
+      const newLine = `- [ ] **${title}**`;
+      const newNode: ASTNode = {
+        type: 'task',
+        raw: newLine,
+        taskStatus: ' ',
+        taskTitle: title,
+        taskId: makeTaskId(agentId, title),
+        priority: (priority as 'high' | 'medium' | 'low') || 'medium',
+        column: column,
+      };
+
+      // Find the target section and insert after header/comments
+      const targetSectionTitle = columnToSectionTitle(column);
+      let insertIdx = -1;
+
+      for (let i = 0; i < ast.length; i++) {
+        const node = ast[i];
+        if (node.type === 'heading' && node.column === column) {
+          insertIdx = i + 1;
+          // Skip comments and blank lines after header
+          while (insertIdx < ast.length && ast[insertIdx].type === 'text') {
+            insertIdx++;
+          }
+          break;
+        }
+      }
+
+      if (insertIdx === -1) {
+        // Section doesn't exist — create it
+        ast.push({ type: 'text', raw: '' });
+        ast.push({ type: 'heading', raw: `## ${targetSectionTitle}`, level: 2, title: targetSectionTitle, column: column });
+        insertIdx = ast.length;
+      }
+
+      ast.splice(insertIdx, 0, newNode);
+
+      const newContent = serializeAST(ast);
+      await writeTasksFile(agentId, newContent);
+      return { fileHash: computeFileHash(newContent) };
+    });
+
+    res.json({ success: true, fileHash: result.fileHash });
+  } catch (error: any) {
+    console.error('Task create error:', error);
+    res.status(500).json({ error: error.message || 'Failed to create task' });
+  }
+});
 
 // ─── Checkpoint ───
 

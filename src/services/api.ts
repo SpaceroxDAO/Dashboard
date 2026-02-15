@@ -178,3 +178,60 @@ export async function getDashboardData(agentId?: string): Promise<DashboardDataR
   }
   return response.json();
 }
+
+// ─── Kanban Task Mutations ───
+
+import type { KanbanColumnId, TaskStatus as KanbanTaskStatus } from '@/types';
+
+export async function moveTask(
+  taskId: string,
+  agentId: string,
+  targetColumn: KanbanColumnId,
+  targetIndex?: number,
+): Promise<{ success: boolean; fileHash: string }> {
+  const response = await fetch(`${API_BASE}/api/tasks/${encodeURIComponent(taskId)}/move`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agentId, targetColumn, targetIndex }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to move task');
+  }
+  return response.json();
+}
+
+export async function toggleTaskStatus(
+  taskId: string,
+  agentId: string,
+  status: KanbanTaskStatus,
+): Promise<{ success: boolean; fileHash: string }> {
+  const response = await fetch(`${API_BASE}/api/tasks/${encodeURIComponent(taskId)}/status`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agentId, status }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to toggle task status');
+  }
+  return response.json();
+}
+
+export async function createTask(
+  agentId: string,
+  title: string,
+  column: KanbanColumnId,
+  priority?: 'high' | 'medium' | 'low',
+): Promise<{ success: boolean; fileHash: string }> {
+  const response = await fetch(`${API_BASE}/api/tasks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agentId, title, column, priority }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to create task');
+  }
+  return response.json();
+}

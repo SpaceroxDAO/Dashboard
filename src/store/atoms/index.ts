@@ -7,6 +7,7 @@ import type {
   SocialBattery, HabitStreak, CronHealth, CurrentMode, Idea,
   TokenStatus, Bill, CheckpointData, MealPlan, FrictionPoint,
   FinnSupervision, SystemMonitoring, KiraReflections,
+  KanbanColumns,
 } from '@/types';
 
 // Persisted atoms (localStorage)
@@ -218,6 +219,12 @@ export const frictionPointsAtom = atom<FrictionPoint[]>([]);
 export const finnSupervisionAtom = atom<FinnSupervision | null>(null);
 export const systemMonitoringAtom = atom<SystemMonitoring | null>(null);
 export const kiraReflectionsAtom = atom<KiraReflections | null>(null);
+
+// Kanban state
+export const kanbanTasksAtom = atom<Record<string, KanbanColumns>>({});
+export const kanbanDirtyAtom = atom<boolean>(false);
+export const kanbanDraggingAtom = atom<boolean>(false);
+export const kanbanFileHashAtom = atom<Record<string, string>>({});
 
 // Dashboard state
 export const lastUpdatedAtom = atom<Date>(new Date());

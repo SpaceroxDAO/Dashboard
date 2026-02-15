@@ -36,6 +36,9 @@ import {
   finnSupervisionAtom,
   systemMonitoringAtom,
   kiraReflectionsAtom,
+  // Kanban conflict guards
+  kanbanDirtyAtom,
+  kanbanDraggingAtom,
 } from '@/store/atoms';
 import {
   checkApiHealth,
@@ -124,6 +127,8 @@ export function useDataLoader() {
   const [, setKiraReflections] = useAtom(kiraReflectionsAtom);
   const [, setMealPlan] = useAtom(mealPlanAtom);
   const [, setFrictionPoints] = useAtom(frictionPointsAtom);
+  const [kanbanDirty] = useAtom(kanbanDirtyAtom);
+  const [kanbanDragging] = useAtom(kanbanDraggingAtom);
 
   const loadingRef = useRef(false);
 
@@ -185,22 +190,24 @@ export function useDataLoader() {
       }
       setAllSkills(allSkills);
 
-      // ── Merge tasks/todos from both agents ──
-      const allTodos: Todo[] = [];
-      for (const data of [finnData, kiraData]) {
-        if (data?.tasks && data.tasks.length > 0) {
-          allTodos.push(...data.tasks.map(t => ({
-            id: t.id,
-            agentId: t.agentId,
-            title: t.title,
-            completed: t.completed,
-            priority: t.priority,
-            category: t.category,
-            createdAt: new Date(t.createdAt),
-          })));
+      // ── Merge tasks/todos from both agents (skip if kanban is mid-mutation) ──
+      if (!kanbanDirty && !kanbanDragging) {
+        const allTodos: Todo[] = [];
+        for (const data of [finnData, kiraData]) {
+          if (data?.tasks && data.tasks.length > 0) {
+            allTodos.push(...data.tasks.map(t => ({
+              id: t.id,
+              agentId: t.agentId,
+              title: t.title,
+              completed: t.completed,
+              priority: t.priority,
+              category: t.category,
+              createdAt: new Date(t.createdAt),
+            })));
+          }
         }
+        setAllTodos(allTodos);
       }
-      setAllTodos(allTodos);
 
       // ── Live stats from both agents ──
       const updatedAgents = agents.map((agent) => {
@@ -312,7 +319,7 @@ export function useDataLoader() {
       loadingRef.current = false;
       setIsRefreshing(false);
     }
-  }, [setAgents, setAllMemoryCategories, setAllDNACategories, setAllCrons, setAllSkills, setHealthData, setAllGoals, setAllTodos, setAllMissions, setTimelineEvents, setQuickActions, setConnectionStatus, setLastUpdated, setIsRefreshing, setPeopleTracker, setJobPipeline, setCalendarEvents, setInsightsData, setSocialBattery, setHabitStreaks, setCronHealth, setCurrentMode, setIdeas, setTokenStatus, setBills, setCheckpoint, setKiraCheckpoint, setKiraCronHealth, setMealPlan, setFrictionPoints, setFinnSupervision, setSystemMonitoring, setKiraReflections]);
+  }, [setAgents, setAllMemoryCategories, setAllDNACategories, setAllCrons, setAllSkills, setHealthData, setAllGoals, setAllTodos, setAllMissions, setTimelineEvents, setQuickActions, setConnectionStatus, setLastUpdated, setIsRefreshing, setPeopleTracker, setJobPipeline, setCalendarEvents, setInsightsData, setSocialBattery, setHabitStreaks, setCronHealth, setCurrentMode, setIdeas, setTokenStatus, setBills, setCheckpoint, setKiraCheckpoint, setKiraCronHealth, setMealPlan, setFrictionPoints, setFinnSupervision, setSystemMonitoring, setKiraReflections, kanbanDirty, kanbanDragging]);
 
   /** Seed all atoms that don't have live API endpoints with mock data */
   function seedMockData() {
