@@ -71,10 +71,10 @@ export function DashboardPage() {
         {/* Stats Grid */}
         <StatsGrid />
 
-        {/* System Status (Finn only — checkpoint, token status, cron health, mode) */}
-        {showHealth && <SystemStatus />}
+        {/* System Status (both agents — checkpoint, cron health, mode) */}
+        <SystemStatus />
 
-        {/* Health (Finn only) */}
+        {/* Health (Finn only — Oura data) */}
         {showHealth && healthData && (
           <HealthSummary data={healthData} />
         )}

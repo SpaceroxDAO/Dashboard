@@ -530,6 +530,171 @@ app.get('/api/dashboard', async (req, res) => {
   }
 });
 
+// ─── Kira Dashboard Data (via SSH) ───
+
+app.get('/api/dashboard/kira', async (req, res) => {
+  try {
+    // Read all key files from Kira's machine in parallel
+    const [checkpointRaw, tasksRaw, performanceRaw, cronReportRaw, syncStatusRaw, healthLogRaw, overnightRaw, allMemoryFiles] = await Promise.all([
+      sshReadFile('memory/checkpoint.md'),
+      sshReadFile('memory/tasks.md'),
+      sshReadFile('memory/kira-performance.md'),
+      sshReadFile('memory/cron-report.md'),
+      sshReadFile('memory/sync-status.md'),
+      sshReadFile('memory/health-log.md'),
+      sshReadFile('memory/overnight-log.md'),
+      getKiraRemoteMemoryFiles().catch(() => []),
+    ]);
+
+    // Parse Kira's checkpoint
+    const checkpoint = checkpointRaw ? {
+      content: checkpointRaw,
+      lastModified: new Date().toISOString(),
+      parsed: parseKiraCheckpoint(checkpointRaw),
+    } : null;
+
+    // Parse Kira's tasks
+    const tasks = tasksRaw ? parseKiraTasks(tasksRaw) : [];
+
+    // Parse cron health from performance metrics
+    const cronHealth = performanceRaw ? parseKiraPerformance(performanceRaw) : null;
+
+    // Kira's active cron count from task board
+    const cronCountMatch = tasksRaw?.match(/\((\d+) total\)/);
+    const cronCount = cronCountMatch ? parseInt(cronCountMatch[1]) : 0;
+
+    // Recent activity from overnight/sync logs
+    const recentActivity: string[] = [];
+    if (syncStatusRaw) {
+      const timeMatch = syncStatusRaw.match(/\*\*Time:\*\*\s*(.+)/);
+      if (timeMatch) recentActivity.push(`Sync: ${timeMatch[1].trim()}`);
+      const statusMatch = syncStatusRaw.match(/\*\*Status:\*\*\s*(.+)/);
+      if (statusMatch) recentActivity.push(statusMatch[1].trim());
+    }
+    if (overnightRaw) {
+      const lines = overnightRaw.split('\n').filter(l => l.startsWith('- ')).slice(0, 3);
+      recentActivity.push(...lines.map(l => l.replace(/^-\s*/, '')));
+    }
+
+    res.json({
+      health: [],
+      skills: [],
+      tasks,
+      checkpoint,
+      stats: {
+        memoryCount: allMemoryFiles.length,
+        skillCount: 0,
+        scriptCount: cronCount,
+      },
+      // Kira doesn't have these data sources, send empty/null
+      peopleTracker: null,
+      jobPipeline: [],
+      calendarEvents: [],
+      insights: null,
+      socialBattery: null,
+      habitStreaks: [],
+      cronHealth,
+      currentMode: { current_mode: 'supervision', set_at: '', auto_detected: true, mode_history: [], stats: {} },
+      ideas: [],
+      tokenStatus: null,
+      bills: [],
+      mealPlan: null,
+      frictionPoints: [],
+      // Kira-specific data
+      recentActivity,
+      syncStatus: syncStatusRaw || null,
+    });
+  } catch (error) {
+    console.error('Kira dashboard error:', error);
+    res.status(500).json({ error: 'Failed to load Kira dashboard data' });
+  }
+});
+
+/** Read a single file from Kira's machine via SSH */
+async function sshReadFile(relativePath: string): Promise<string | null> {
+  const winPath = `${KIRA_BASE_PATH}\\${relativePath.replace(/\//g, '\\\\')}`;
+  const content = await sshExec(`type "${winPath}"`);
+  return content.trim() || null;
+}
+
+/** Parse Kira's checkpoint markdown */
+function parseKiraCheckpoint(content: string) {
+  const getSection = (header: string): string[] => {
+    const regex = new RegExp(`##\\s*[^\\n]*${header}[^\\n]*\\n([\\s\\S]*?)(?=\\n## |\\n---|\$)`, 'i');
+    const match = content.match(regex);
+    if (!match) return [];
+    return match[1].trim().split('\n').filter(l => l.startsWith('- ') || l.startsWith('**')).map(l => l.replace(/^-\s*/, '').replace(/\*\*/g, ''));
+  };
+
+  return {
+    sessionState: getSection('Current State'),
+    todayActivity: getSection('Key Events'),
+    pendingTasks: getSection('Overnight'),
+    systems: getSection('Status|State'),
+    tokenStatus: [],
+  };
+}
+
+/** Parse Kira's task board */
+function parseKiraTasks(content: string) {
+  const tasks: Array<{
+    id: string; agentId: string; title: string;
+    completed: boolean; priority: 'high' | 'medium' | 'low';
+    category: string; createdAt: Date;
+  }> = [];
+  let idx = 0;
+
+  for (const line of content.split('\n')) {
+    const taskMatch = line.match(/^-\s*\[([ x~])\]\s*(.+)$/);
+    if (taskMatch) {
+      idx++;
+      tasks.push({
+        id: `kira-task-${idx}`,
+        agentId: 'kira',
+        title: taskMatch[2].trim(),
+        completed: taskMatch[1] === 'x',
+        priority: 'medium',
+        category: 'Operations',
+        createdAt: new Date(),
+      });
+    }
+    // Also capture table-format active cron jobs
+    const tableMatch = line.match(/^\|\s*`(.+?)`\s*\|.+?\|\s*(.+?)\s*\|/);
+    if (tableMatch && !line.includes('Job') && !line.includes('---')) {
+      idx++;
+      tasks.push({
+        id: `kira-cron-${idx}`,
+        agentId: 'kira',
+        title: `${tableMatch[1]} — ${tableMatch[2].trim()}`,
+        completed: false,
+        priority: 'low',
+        category: 'Active Crons',
+        createdAt: new Date(),
+      });
+    }
+  }
+
+  return tasks;
+}
+
+/** Parse Kira's performance metrics into cron health shape */
+function parseKiraPerformance(content: string): { alert: boolean; failures: number; zombies: number; stalled: number; never_run: number; message: string } {
+  const totalMatch = content.match(/Total Active Crons:\*\*\s*(\d+)/);
+  const avgMatch = content.match(/Average Execution Time:\*\*\s*~?(\d+)/);
+  const statusMatch = content.match(/Current Status:\s*(\w+)/i);
+
+  const healthy = statusMatch ? statusMatch[1].toUpperCase() === 'HEALTHY' : true;
+
+  return {
+    alert: !healthy,
+    failures: 0,
+    zombies: 0,
+    stalled: 0,
+    never_run: 0,
+    message: `${totalMatch?.[1] || '?'} crons, avg ${avgMatch?.[1] || '?'}ms — ${healthy ? 'HEALTHY' : 'DEGRADED'}`,
+  };
+}
+
 // ─── Existing endpoints ───
 
 // List memory files for an agent

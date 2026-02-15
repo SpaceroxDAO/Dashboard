@@ -28,6 +28,8 @@ import {
   tokenStatusAtom,
   billsAtom,
   checkpointAtom,
+  kiraCheckpointAtom,
+  kiraCronHealthAtom,
   mealPlanAtom,
   frictionPointsAtom,
 } from '@/store/atoms';
@@ -111,6 +113,8 @@ export function useDataLoader() {
   const [, setTokenStatus] = useAtom(tokenStatusAtom);
   const [, setBills] = useAtom(billsAtom);
   const [, setCheckpoint] = useAtom(checkpointAtom);
+  const [, setKiraCheckpoint] = useAtom(kiraCheckpointAtom);
+  const [, setKiraCronHealth] = useAtom(kiraCronHealthAtom);
   const [, setMealPlan] = useAtom(mealPlanAtom);
   const [, setFrictionPoints] = useAtom(frictionPointsAtom);
 
@@ -133,9 +137,10 @@ export function useDataLoader() {
         return false;
       }
 
-      // Fetch everything from the live API in parallel
-      const [dashboardData, finnMemory, kiraMemory, finnDNA, kiraDNA] = await Promise.all([
-        getDashboardData().catch(() => null),
+      // Fetch BOTH agents' data in parallel
+      const [finnData, kiraData, finnMemory, kiraMemory, finnDNA, kiraDNA] = await Promise.all([
+        getDashboardData('finn').catch(() => null),
+        getDashboardData('kira').catch(() => null),
         getAgentMemory('finn').catch(() => null),
         getAgentMemory('kira').catch(() => null),
         getDNAFiles().catch(() => null),
@@ -143,8 +148,8 @@ export function useDataLoader() {
       ]);
 
       // ── Live health data (fixed: pick record with MOST data) ──
-      if (dashboardData?.health && dashboardData.health.length > 0) {
-        const scored = dashboardData.health.map(h => ({
+      if (finnData?.health && finnData.health.length > 0) {
+        const scored = finnData.health.map(h => ({
           record: h,
           score: (h.sleep.score > 0 ? 1 : 0) + (h.readiness.score > 0 ? 1 : 0) +
                  (h.activity.score > 0 ? 1 : 0) + (h.heartRate.restingHr > 0 ? 1 : 0) +
@@ -163,34 +168,43 @@ export function useDataLoader() {
         setHealthData([healthData]);
       }
 
-      // ── Live skills ──
-      if (dashboardData?.skills && dashboardData.skills.length > 0) {
-        setAllSkills(dashboardData.skills as Skill[]);
+      // ── Merge skills from both agents ──
+      const allSkills: Skill[] = [];
+      if (finnData?.skills && finnData.skills.length > 0) {
+        allSkills.push(...(finnData.skills as Skill[]));
       }
-
-      // ── Live tasks → todos ──
-      if (dashboardData?.tasks && dashboardData.tasks.length > 0) {
-        const todos: Todo[] = dashboardData.tasks.map(t => ({
-          id: t.id,
-          agentId: t.agentId,
-          title: t.title,
-          completed: t.completed,
-          priority: t.priority,
-          category: t.category,
-          createdAt: new Date(t.createdAt),
-        }));
-        setAllTodos(todos);
+      if (kiraData?.skills && kiraData.skills.length > 0) {
+        allSkills.push(...(kiraData.skills as Skill[]));
       }
+      setAllSkills(allSkills);
 
-      // ── Live stats ──
+      // ── Merge tasks/todos from both agents ──
+      const allTodos: Todo[] = [];
+      for (const data of [finnData, kiraData]) {
+        if (data?.tasks && data.tasks.length > 0) {
+          allTodos.push(...data.tasks.map(t => ({
+            id: t.id,
+            agentId: t.agentId,
+            title: t.title,
+            completed: t.completed,
+            priority: t.priority,
+            category: t.category,
+            createdAt: new Date(t.createdAt),
+          })));
+        }
+      }
+      setAllTodos(allTodos);
+
+      // ── Live stats from both agents ──
       const updatedAgents = agents.map((agent) => {
-        if (agent.id === 'finn' && dashboardData?.stats) {
+        const data = agent.id === 'finn' ? finnData : kiraData;
+        if (data?.stats) {
           return {
             ...agent,
             stats: {
-              memoryCount: dashboardData.stats.memoryCount,
-              cronCount: dashboardData.stats.scriptCount,
-              skillCount: dashboardData.stats.skillCount,
+              memoryCount: data.stats.memoryCount,
+              cronCount: data.stats.scriptCount,
+              skillCount: data.stats.skillCount,
             },
           };
         }
@@ -198,28 +212,32 @@ export function useDataLoader() {
       });
       setAgents(updatedAgents);
 
-      // ── ALL new data sources from API ──
-      if (dashboardData) {
-        setPeopleTracker(dashboardData.peopleTracker);
-        setJobPipeline(dashboardData.jobPipeline || []);
-        setCalendarEvents(dashboardData.calendarEvents || []);
-        setInsightsData(dashboardData.insights);
-        setSocialBattery(dashboardData.socialBattery);
-        setHabitStreaks(dashboardData.habitStreaks || []);
-        setCronHealth(dashboardData.cronHealth);
-        setCurrentMode(dashboardData.currentMode);
-        setIdeas(dashboardData.ideas || []);
-        setTokenStatus(dashboardData.tokenStatus);
-        setBills(dashboardData.bills || []);
-        setCheckpoint(dashboardData.checkpoint);
-        setMealPlan(dashboardData.mealPlan);
-        setFrictionPoints(dashboardData.frictionPoints || []);
+      // ── Finn-specific data sources ──
+      if (finnData) {
+        setPeopleTracker(finnData.peopleTracker);
+        setJobPipeline(finnData.jobPipeline || []);
+        setCalendarEvents(finnData.calendarEvents || []);
+        setInsightsData(finnData.insights);
+        setSocialBattery(finnData.socialBattery);
+        setHabitStreaks(finnData.habitStreaks || []);
+        setIdeas(finnData.ideas || []);
+        setTokenStatus(finnData.tokenStatus);
+        setBills(finnData.bills || []);
+        setMealPlan(finnData.mealPlan);
+        setFrictionPoints(finnData.frictionPoints || []);
       }
 
+      // ── Store checkpoint & cron health per agent ──
+      setCheckpoint(finnData?.checkpoint || null);
+      setKiraCheckpoint(kiraData?.checkpoint || null);
+      setCronHealth(finnData?.cronHealth || null);
+      setKiraCronHealth(kiraData?.cronHealth || null);
+      setCurrentMode(finnData?.currentMode || kiraData?.currentMode || null);
+
       // ── Build timeline from real calendar events ──
-      if (dashboardData?.calendarEvents && dashboardData.calendarEvents.length > 0) {
+      if (finnData?.calendarEvents && finnData.calendarEvents.length > 0) {
         const now = new Date();
-        const upcoming = dashboardData.calendarEvents
+        const upcoming = finnData.calendarEvents
           .filter(e => new Date(e.start) >= now)
           .slice(0, 8)
           .map((e, i): TimelineEvent => ({
@@ -244,7 +262,7 @@ export function useDataLoader() {
       setAllMissions(mockMissions);
       setQuickActions(mockQuickActions);
 
-      // ── Memory categories ──
+      // ── Memory categories from both agents ──
       const liveMemory: MemoryCategory[] = [];
       if (finnMemory) {
         for (const c of finnMemory) {
@@ -258,7 +276,7 @@ export function useDataLoader() {
       }
       setAllMemoryCategories(liveMemory);
 
-      // ── DNA categories ──
+      // ── DNA categories from both agents ──
       const allDNA: DNACategory[] = [];
       if (finnDNA && finnDNA.length > 0) {
         allDNA.push(...buildDNACategoriesFromFiles(finnDNA, 'finn'));
@@ -280,7 +298,7 @@ export function useDataLoader() {
       loadingRef.current = false;
       setIsRefreshing(false);
     }
-  }, [setAgents, setAllMemoryCategories, setAllDNACategories, setAllCrons, setAllSkills, setHealthData, setAllGoals, setAllTodos, setAllMissions, setTimelineEvents, setQuickActions, setConnectionStatus, setLastUpdated, setIsRefreshing, setPeopleTracker, setJobPipeline, setCalendarEvents, setInsightsData, setSocialBattery, setHabitStreaks, setCronHealth, setCurrentMode, setIdeas, setTokenStatus, setBills, setCheckpoint, setMealPlan, setFrictionPoints]);
+  }, [setAgents, setAllMemoryCategories, setAllDNACategories, setAllCrons, setAllSkills, setHealthData, setAllGoals, setAllTodos, setAllMissions, setTimelineEvents, setQuickActions, setConnectionStatus, setLastUpdated, setIsRefreshing, setPeopleTracker, setJobPipeline, setCalendarEvents, setInsightsData, setSocialBattery, setHabitStreaks, setCronHealth, setCurrentMode, setIdeas, setTokenStatus, setBills, setCheckpoint, setKiraCheckpoint, setKiraCronHealth, setMealPlan, setFrictionPoints]);
 
   /** Seed all atoms that don't have live API endpoints with mock data */
   function seedMockData() {

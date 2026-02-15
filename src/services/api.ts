@@ -163,8 +163,11 @@ export interface DashboardDataResponse {
   frictionPoints: FrictionPoint[];
 }
 
-export async function getDashboardData(): Promise<DashboardDataResponse> {
-  const response = await fetch(`${API_BASE}/api/dashboard`);
+export async function getDashboardData(agentId?: string): Promise<DashboardDataResponse> {
+  const url = agentId === 'kira'
+    ? `${API_BASE}/api/dashboard/kira`
+    : `${API_BASE}/api/dashboard`;
+  const response = await fetch(url);
   if (!response.ok) {
     throw new Error('Failed to fetch dashboard data');
   }

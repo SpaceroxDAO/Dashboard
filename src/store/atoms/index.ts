@@ -194,8 +194,18 @@ export const tokenStatusAtom = atom<TokenStatus | null>(null);
 // Bills
 export const billsAtom = atom<Bill[]>([]);
 
-// Checkpoint
+// Checkpoint (keyed by agent)
 export const checkpointAtom = atom<CheckpointData | null>(null);
+export const kiraCheckpointAtom = atom<CheckpointData | null>(null);
+export const kiraCronHealthAtom = atom<CronHealth | null>(null);
+export const activeCheckpointAtom = atom((get) => {
+  const agentId = get(activeAgentIdAtom);
+  return agentId === 'kira' ? get(kiraCheckpointAtom) : get(checkpointAtom);
+});
+export const activeCronHealthAtom = atom((get) => {
+  const agentId = get(activeAgentIdAtom);
+  return agentId === 'kira' ? get(kiraCronHealthAtom) : get(cronHealthAtom);
+});
 
 // Meal Plan
 export const mealPlanAtom = atom<MealPlan | null>(null);

@@ -1,10 +1,10 @@
 import { useAtom } from 'jotai';
 import { Activity, AlertTriangle, Battery, Brain, Cpu, Shield } from 'lucide-react';
-import { checkpointAtom, cronHealthAtom, tokenStatusAtom, currentModeAtom, socialBatteryAtom } from '@/store/atoms';
+import { activeCheckpointAtom, activeCronHealthAtom, tokenStatusAtom, currentModeAtom, socialBatteryAtom } from '@/store/atoms';
 
 export function SystemStatus() {
-  const [checkpoint] = useAtom(checkpointAtom);
-  const [cronHealth] = useAtom(cronHealthAtom);
+  const [checkpoint] = useAtom(activeCheckpointAtom);
+  const [cronHealth] = useAtom(activeCronHealthAtom);
   const [tokenStatus] = useAtom(tokenStatusAtom);
   const [currentMode] = useAtom(currentModeAtom);
   const [socialBattery] = useAtom(socialBatteryAtom);
