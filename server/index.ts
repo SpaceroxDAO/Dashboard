@@ -534,6 +534,20 @@ app.get('/api/dashboard', async (req, res) => {
 
 app.get('/api/dashboard/kira', async (req, res) => {
   try {
+    // ── Dynamic file discovery: latest daily reflection & P0 alert ──
+    const [reflectionFiles, p0Files] = await Promise.all([
+      sshExec('dir /b "C:\\Users\\adami\\kira\\memory\\daily-reflections"').catch(() => ''),
+      sshExec('dir /b "C:\\Users\\adami\\kira\\memory\\p0-alert-*"').catch(() => ''),
+    ]);
+
+    // Find latest daily reflection (sorted alphabetically = chronologically with YYYY-MM-DD names)
+    const reflectionList = reflectionFiles.trim().split(/\r?\n/).filter(f => f.endsWith('.md')).sort();
+    const latestReflection = reflectionList.length > 0 ? reflectionList[reflectionList.length - 1] : null;
+
+    // Find latest P0 alert
+    const p0List = p0Files.trim().split(/\r?\n/).filter(f => f.endsWith('.md')).sort();
+    const latestP0 = p0List.length > 0 ? p0List[p0List.length - 1] : null;
+
     // Read ALL key files from Kira's machine in parallel
     const [
       checkpointRaw, tasksRaw, performanceRaw, cronReportRaw,
@@ -555,9 +569,9 @@ app.get('/api/dashboard/kira', async (req, res) => {
       sshReadFile('memory/workload.md'),
       sshReadFile('memory/qa-log.md'),
       sshReadFile('memory/dreams.md'),
-      sshReadFile('memory/daily-reflections/2026-02-14.md'),
+      latestReflection ? sshReadFile(`memory/daily-reflections/${latestReflection}`) : Promise.resolve(null),
       sshReadFile('memory/finn-tracking/performance-dashboard.md'),
-      sshReadFile('memory/p0-alert-20260215-1401.md'),
+      latestP0 ? sshReadFile(`memory/${latestP0}`) : Promise.resolve(null),
       getKiraRemoteMemoryFiles().catch(() => []),
       sshExec('dir /b "C:\\Users\\adami\\kira\\skills"').catch(() => ''),
       sshExec('dir /b "C:\\Users\\adami\\kira\\scripts"').catch(() => ''),
@@ -576,9 +590,50 @@ app.get('/api/dashboard/kira', async (req, res) => {
     // Parse cron health from performance metrics
     const cronHealth = performanceRaw ? parseKiraPerformance(performanceRaw) : null;
 
-    // Count skills and scripts
-    const skillCount = skillEntries ? skillEntries.trim().split(/\r?\n/).filter(Boolean).length : 0;
-    const scriptCount = scriptEntries ? scriptEntries.trim().split(/\r?\n/).filter(f => f.endsWith('.ps1') || f.endsWith('.py') || f.endsWith('.sh')).length : 0;
+    // ── Build Kira's skill list from skill directories ──
+    const skillDirNames = skillEntries ? skillEntries.trim().split(/\r?\n/).filter(Boolean) : [];
+    const scriptFiles = scriptEntries ? scriptEntries.trim().split(/\r?\n/).filter(f => f.endsWith('.ps1') || f.endsWith('.py') || f.endsWith('.sh')) : [];
+    const skillCount = skillDirNames.length;
+    const scriptCount = scriptFiles.length;
+
+    // Read SKILL.md from each skill directory
+    const skillDocs = await Promise.all(
+      skillDirNames.map(name =>
+        sshReadFile(`skills/${name}/SKILL.md`).catch(() => null)
+      )
+    );
+
+    const skills = skillDirNames.map((dirName, i) => {
+      const doc = skillDocs[i];
+      let name = prettyCategoryName(dirName);
+      let description = `${name} skill`;
+
+      if (doc) {
+        // Extract name from YAML frontmatter or first heading
+        const nameMatch = doc.match(/^name:\s*(.+)/m) || doc.match(/^#\s+(.+)/m);
+        if (nameMatch) name = nameMatch[1].trim();
+        // Extract description from frontmatter or first non-header line
+        const descMatch = doc.match(/^description:\s*(.+)/m);
+        if (descMatch) {
+          description = descMatch[1].trim();
+        } else {
+          const lines = doc.split('\n');
+          const descLine = lines.find(l => l.trim() && !l.startsWith('#') && !l.startsWith('---') && !l.startsWith('name:') && !l.startsWith('description:'));
+          if (descLine) description = descLine.trim();
+        }
+      }
+
+      return {
+        id: dirName,
+        agentId: 'kira',
+        name,
+        description,
+        icon: guessSkillIcon(dirName),
+        category: guessSkillCategory(dirName),
+        enabled: true,
+        commands: [],
+      };
+    });
 
     // ── Finn Supervision data ──
     const finnSupervision = {
@@ -606,7 +661,7 @@ app.get('/api/dashboard/kira', async (req, res) => {
 
     res.json({
       health: [],
-      skills: [],
+      skills,
       tasks,
       checkpoint,
       stats: {
