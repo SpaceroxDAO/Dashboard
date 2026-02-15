@@ -209,7 +209,7 @@ function parseTasksFile(content: string) {
     }
 
     // Parse task lines
-    const taskMatch = line.match(/^-\s*\[([ x~])\]\s*\*?\*?(.+?)\*?\*?\s*(?:—|$)/);
+    const taskMatch = line.match(/^-\s*\[([ x~])\]\s*\*?\*?(.+?)(?:\*?\*?\s*(?:—.*)?)?$/);
     if (taskMatch) {
       const [, status, title] = taskMatch;
       idx++;
@@ -284,12 +284,132 @@ app.get('/api/scripts', async (req, res) => {
   }
 });
 
+// ─── JSON file readers (safe — returns null on error) ───
+
+async function readJsonFile(filePath: string): Promise<any> {
+  try {
+    const content = await fs.readFile(filePath, 'utf-8');
+    return JSON.parse(content);
+  } catch {
+    return null;
+  }
+}
+
+async function readMdFile(filePath: string): Promise<string | null> {
+  try {
+    return await fs.readFile(filePath, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
+// ─── Token Status parser ───
+
+function parseTokenStatus(content: string) {
+  const lastUpdated = content.match(/\*\*Last Updated:\*\*\s*(.+)/)?.[1]?.trim() || '';
+  const dailyMatch = content.match(/Daily Budget\*\*\s*\|\s*(.+?)\s*\|/);
+  const weeklyMatch = content.match(/Weekly Budget\*\*\s*\|\s*(.+?)\s*\|/);
+  const contextMatch = content.match(/Context Window\*\*\s*\|\s*(.+?)\s*\|/);
+  const modelMatch = content.match(/- Model:\s*(.+)/);
+  const sessionMatch = content.match(/- Session:\s*(.+)/);
+  const compactionsMatch = content.match(/- Compactions:\s*(\d+)/);
+
+  return {
+    lastUpdated,
+    dailyRemaining: dailyMatch?.[1]?.trim() || '',
+    weeklyRemaining: weeklyMatch?.[1]?.trim() || '',
+    contextWindow: contextMatch?.[1]?.trim() || '',
+    model: modelMatch?.[1]?.trim() || '',
+    session: sessionMatch?.[1]?.trim() || '',
+    compactions: compactionsMatch ? parseInt(compactionsMatch[1]) : 0,
+  };
+}
+
+// ─── Bills parser ───
+
+function parseBills(content: string) {
+  const bills: Array<{ provider: string; date: string; amount: string; dueDate: string; emailDate: string; subject: string }> = [];
+  const entries = content.split(/\n## /).slice(1); // Skip header
+
+  for (const entry of entries) {
+    const lines = entry.trim().split('\n');
+    const headerMatch = lines[0]?.match(/^(.+?)\s*-\s*(\d{4}-\d{2}-\d{2})/);
+    if (!headerMatch) continue;
+
+    const provider = headerMatch[1].trim();
+    const date = headerMatch[2];
+    const amount = lines.find(l => l.includes('**Amount:**'))?.match(/\*\*Amount:\*\*\s*(.+)/)?.[1]?.trim() || 'Unknown';
+    const dueDate = lines.find(l => l.includes('**Due Date:**'))?.match(/\*\*Due Date:\*\*\s*(.+)/)?.[1]?.trim() || 'Unknown';
+    const emailDate = lines.find(l => l.includes('**Email Date:**'))?.match(/\*\*Email Date:\*\*\s*(.+)/)?.[1]?.trim() || '';
+    const subject = lines.find(l => l.includes('**Subject:**'))?.match(/\*\*Subject:\*\*\s*(.+)/)?.[1]?.trim() || '';
+
+    bills.push({ provider, date, amount, dueDate, emailDate, subject });
+  }
+
+  return bills;
+}
+
+// ─── Friction Points parser ───
+
+function parseFrictionPoints(content: string) {
+  const points: Array<{ name: string; priority: string; status: string; issue: string }> = [];
+  const sections = content.split(/\n---\n/);
+
+  for (const section of sections) {
+    // Find P1 or P2 sections
+    const priorityMatch = section.match(/## Active \((P[12])/);
+    if (!priorityMatch) continue;
+    const priority = priorityMatch[1];
+
+    // Find individual issues within the section
+    const issues = section.split(/\n### /).slice(1);
+    for (const issue of issues) {
+      const lines = issue.trim().split('\n');
+      const name = lines[0]?.trim() || '';
+      if (!name || name.includes('FIXED')) continue;
+      const statusLine = lines.find(l => l.includes('**Status:**'));
+      const status = statusLine?.match(/\*\*Status:\*\*\s*(.+)/)?.[1]?.trim() || '';
+      const issueLine = lines.find(l => l.includes('**Issue:**'));
+      const issueText = issueLine?.match(/\*\*Issue:\*\*\s*(.+)/)?.[1]?.trim() || '';
+      points.push({ name, priority, status, issue: issueText });
+    }
+  }
+
+  return points;
+}
+
+// ─── Meal Plan parser ───
+
+function parseMealPlan(content: string) {
+  const titleMatch = content.match(/^# (.+)/m);
+  const weekMatch = content.match(/\*\*Week of (.+?)\*\*/);
+  return {
+    title: titleMatch?.[1]?.trim() || 'Meal Plan',
+    weekRange: weekMatch?.[1]?.trim() || '',
+    content,
+  };
+}
+
+// ─── Habits/Streaks transformer ───
+
+function transformStreaks(data: Record<string, { last_date: string; streak: number }>): Array<{ name: string; last_date: string; streak: number }> {
+  return Object.entries(data).map(([name, info]) => ({ name, ...info }));
+}
+
 // ─── Combined dashboard data (single request for all live data) ───
 
 app.get('/api/dashboard', async (req, res) => {
   try {
-    // Fetch everything in parallel
-    const [healthFiles, skillEntries, tasksContent, checkpointContent, checkpointStats, scriptEntries, memoryFiles, dnaEntries] = await Promise.all([
+    // Fetch EVERYTHING in parallel
+    const [
+      healthFiles, skillEntries, tasksContent, checkpointContent, checkpointStats,
+      scriptEntries, memoryFiles,
+      // New data sources
+      peopleTracker, jobPipeline, calendarEvents, insightsData,
+      socialBattery, streaksData, cronHealth, currentMode,
+      ideasData, tokenStatusContent, billsContent,
+      mealPlanContent, frictionContent,
+    ] = await Promise.all([
       fs.readdir(HEALTH_PATH).catch(() => []),
       fs.readdir(SKILLS_PATH, { withFileTypes: true }).catch(() => []),
       fs.readFile(path.join(MEMORY_PATH, 'tasks.md'), 'utf-8').catch(() => ''),
@@ -297,10 +417,23 @@ app.get('/api/dashboard', async (req, res) => {
       fs.stat(path.join(MEMORY_PATH, 'checkpoint.md')).catch(() => null),
       fs.readdir(SCRIPTS_PATH).catch(() => []),
       getAllMemoryFilesRecursive().catch(() => []),
-      fs.readdir(AGENTS_BASE_PATH, { withFileTypes: true }).catch(() => []),
+      // New data sources
+      readJsonFile(path.join(MEMORY_PATH, 'people-tracker.json')),
+      readJsonFile(path.join(MEMORY_PATH, 'job-pipeline.json')),
+      readJsonFile(path.join(MEMORY_PATH, 'work-calendar-events.json')),
+      readJsonFile(path.join(MEMORY_PATH, 'insights.json')),
+      readJsonFile(path.join(MEMORY_PATH, 'social-battery.json')),
+      readJsonFile(path.join(MEMORY_PATH, 'habits', 'streaks.json')),
+      readJsonFile(path.join(MEMORY_PATH, 'cron-health-alerts.json')),
+      readJsonFile(path.join(MEMORY_PATH, 'current-mode.json')),
+      readJsonFile(path.join(MEMORY_PATH, 'ideas.json')),
+      readMdFile(path.join(MEMORY_PATH, 'token-status.md')),
+      readMdFile(path.join(MEMORY_PATH, 'bills.md')),
+      readMdFile(path.join(MEMORY_PATH, 'meal-plan-current.md')),
+      readMdFile(path.join(MEMORY_PATH, 'friction-points.md')),
     ]);
 
-    // Parse health
+    // Parse health — prefer the record with the MOST data (highest sum of scores)
     const healthMdFiles = (healthFiles as string[]).filter(f => f.endsWith('.md')).sort().reverse();
     const healthData = await Promise.all(
       healthMdFiles.map(async (file) => {
@@ -339,7 +472,7 @@ app.get('/api/dashboard', async (req, res) => {
       })
     );
 
-    // Parse tasks
+    // Parse tasks — fixed regex to not require em-dash
     const tasks = tasksContent ? parseTasksFile(tasksContent) : [];
 
     // Parse checkpoint
@@ -352,6 +485,20 @@ app.get('/api/dashboard', async (req, res) => {
     // Scripts count
     const scriptFiles = (scriptEntries as string[]).filter(f => f.endsWith('.sh') || f.endsWith('.py') || f.endsWith('.js'));
 
+    // Parse markdown data sources
+    const tokenStatus = tokenStatusContent ? parseTokenStatus(tokenStatusContent) : null;
+    const bills = billsContent ? parseBills(billsContent) : [];
+    const mealPlan = mealPlanContent ? parseMealPlan(mealPlanContent) : null;
+    const frictionPoints = frictionContent ? parseFrictionPoints(frictionContent) : [];
+    const habitStreaks = streaksData ? transformStreaks(streaksData) : [];
+
+    // For insights, only send summary + top insights (full file is huge)
+    const insightsSummary = insightsData ? {
+      generated_at: insightsData.generated_at,
+      observation_count: insightsData.observation_count,
+      insights: (insightsData.insights || []).slice(0, 20), // Top 20 only
+    } : null;
+
     res.json({
       health: healthData,
       skills,
@@ -362,6 +509,20 @@ app.get('/api/dashboard', async (req, res) => {
         skillCount: skillDirs.length,
         scriptCount: scriptFiles.length,
       },
+      // All new data sources
+      peopleTracker: peopleTracker || null,
+      jobPipeline: jobPipeline || [],
+      calendarEvents: calendarEvents || [],
+      insights: insightsSummary,
+      socialBattery: socialBattery || null,
+      habitStreaks,
+      cronHealth: cronHealth || null,
+      currentMode: currentMode || null,
+      ideas: ideasData?.ideas || [],
+      tokenStatus,
+      bills,
+      mealPlan,
+      frictionPoints,
     });
   } catch (error) {
     console.error('Dashboard data error:', error);

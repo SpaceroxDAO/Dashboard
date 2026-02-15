@@ -219,6 +219,167 @@ export interface Mission {
   skillId?: string;
 }
 
+// People Tracker Types
+export interface TrackedPerson {
+  name: string;
+  relationship: string;
+  location: string;
+  contact_method: string;
+  cadence_days: number;
+  last_contact: string | null;
+  notes: string;
+}
+
+export interface PeopleTracker {
+  version: number;
+  description: string;
+  settings: { default_cadence_days: number; nudge_hour_eastern: number };
+  people: TrackedPerson[];
+}
+
+// Job Pipeline Types
+export interface JobOpportunity {
+  id: string;
+  company: string;
+  role: string;
+  stage: string;
+  priority: 'high' | 'medium' | 'low';
+  comp: string;
+  source: string;
+  created_at: string;
+  last_activity: string;
+  next_action: string;
+  next_action_date: string;
+  notes: string;
+  prep_doc?: string;
+  contacts: string[];
+}
+
+// Calendar Events Types
+export interface CalendarEvent {
+  subject: string;
+  start: string;
+  end: string;
+}
+
+// Insights Types
+export interface Insight {
+  id: string;
+  title: string;
+  category: string;
+  what: string;
+  relevance_score: number;
+  source_id: number;
+  created_at: string;
+}
+
+export interface InsightsData {
+  generated_at: string;
+  observation_count: number;
+  insights: Insight[];
+}
+
+// Social Battery Types
+export interface SocialBattery {
+  current_level: number;
+  max_level: number;
+  personality_type: string;
+  drain_rate: Record<string, number>;
+  recharge_rate: Record<string, number>;
+  last_updated: string | null;
+  conference_mode: boolean;
+  today_events: unknown[];
+}
+
+// Habits/Streaks Types
+export interface HabitStreak {
+  name: string;
+  last_date: string;
+  streak: number;
+}
+
+// Cron Health Types
+export interface CronHealth {
+  alert: boolean;
+  failures: number;
+  zombies: number;
+  stalled: number;
+  never_run: number;
+  message: string;
+}
+
+// Current Mode Types
+export interface CurrentMode {
+  current_mode: string;
+  set_at: string;
+  auto_detected: boolean;
+  mode_history: Array<{ mode: string; ended_at: string }>;
+  stats: Record<string, number>;
+}
+
+// Ideas Types
+export interface Idea {
+  id: string;
+  idea: string;
+  category: string;
+  tags: string[];
+  created: string;
+  updated: string;
+  heat: number;
+  views: number;
+  notes: unknown[];
+  connections: unknown[];
+}
+
+// Token Status Types
+export interface TokenStatus {
+  lastUpdated: string;
+  dailyRemaining: string;
+  weeklyRemaining: string;
+  contextWindow: string;
+  model: string;
+  session: string;
+  compactions: number;
+}
+
+// Bills Types
+export interface Bill {
+  provider: string;
+  date: string;
+  amount: string;
+  dueDate: string;
+  emailDate: string;
+  subject: string;
+}
+
+// Checkpoint Types
+export interface CheckpointData {
+  content: string;
+  lastModified: string;
+  parsed: {
+    sessionState: string[];
+    todayActivity: string[];
+    pendingTasks: string[];
+    systems: string[];
+    tokenStatus: string[];
+  };
+}
+
+// Meal Plan Types
+export interface MealPlan {
+  title: string;
+  weekRange: string;
+  content: string;
+}
+
+// Friction Points Types
+export interface FrictionPoint {
+  name: string;
+  priority: 'P1' | 'P2';
+  status: string;
+  issue: string;
+}
+
 // DNA Types
 export interface DNAFile {
   id: string;

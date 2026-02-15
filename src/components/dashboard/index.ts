@@ -5,3 +5,7 @@ export { TimelineItem } from './TimelineItem';
 export { UpcomingEvents } from './UpcomingEvents';
 export { QuickActions } from './QuickActions';
 export { HealthSummary } from './HealthSummary';
+export { SystemStatus } from './SystemStatus';
+export { JobPipeline } from './JobPipeline';
+export { PeopleWidget } from './PeopleWidget';
+export { HabitsWidget } from './HabitsWidget';

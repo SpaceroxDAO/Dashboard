@@ -1,6 +1,12 @@
 import { atom } from 'jotai';
 import { atomWithStorage } from 'jotai/utils';
-import type { Agent, MemoryCategory, CronJob, Skill, HealthData, ConnectionStatus, Goal, Todo, Mission, DNACategory, TimelineEvent, QuickAction } from '@/types';
+import type {
+  Agent, MemoryCategory, CronJob, Skill, HealthData, ConnectionStatus,
+  Goal, Todo, Mission, DNACategory, TimelineEvent, QuickAction,
+  PeopleTracker, JobOpportunity, CalendarEvent, InsightsData,
+  SocialBattery, HabitStreak, CronHealth, CurrentMode, Idea,
+  TokenStatus, Bill, CheckpointData, MealPlan, FrictionPoint,
+} from '@/types';
 
 // Persisted atoms (localStorage)
 export const activeAgentIdAtom = atomWithStorage<string>('activeAgentId', 'finn');
@@ -149,6 +155,53 @@ export const selectedDNAIdAtom = atom<string | null>(null);
 // Timeline & Quick Actions atoms
 export const timelineEventsAtom = atom<TimelineEvent[]>([]);
 export const quickActionsAtom = atom<QuickAction[]>([]);
+
+// People Tracker
+export const peopleTrackerAtom = atom<PeopleTracker | null>(null);
+
+// Job Pipeline
+export const jobPipelineAtom = atom<JobOpportunity[]>([]);
+
+// Calendar Events
+export const calendarEventsAtom = atom<CalendarEvent[]>([]);
+export const upcomingCalendarEventsAtom = atom((get) => {
+  const events = get(calendarEventsAtom);
+  const now = new Date();
+  return events.filter(e => new Date(e.start) >= now).slice(0, 10);
+});
+
+// Insights
+export const insightsDataAtom = atom<InsightsData | null>(null);
+
+// Social Battery
+export const socialBatteryAtom = atom<SocialBattery | null>(null);
+
+// Habits/Streaks
+export const habitStreaksAtom = atom<HabitStreak[]>([]);
+
+// Cron Health
+export const cronHealthAtom = atom<CronHealth | null>(null);
+
+// Current Mode
+export const currentModeAtom = atom<CurrentMode | null>(null);
+
+// Ideas
+export const ideasAtom = atom<Idea[]>([]);
+
+// Token Status
+export const tokenStatusAtom = atom<TokenStatus | null>(null);
+
+// Bills
+export const billsAtom = atom<Bill[]>([]);
+
+// Checkpoint
+export const checkpointAtom = atom<CheckpointData | null>(null);
+
+// Meal Plan
+export const mealPlanAtom = atom<MealPlan | null>(null);
+
+// Friction Points
+export const frictionPointsAtom = atom<FrictionPoint[]>([]);
 
 // Dashboard state
 export const lastUpdatedAtom = atom<Date>(new Date());

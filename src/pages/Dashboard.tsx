@@ -8,6 +8,10 @@ import {
   HealthSummary,
   UpcomingEvents,
   QuickActions,
+  SystemStatus,
+  JobPipeline,
+  PeopleWidget,
+  HabitsWidget,
 } from '@/components/dashboard';
 import { activeAgentAtom, latestHealthAtom, timelineEventsAtom, quickActionsAtom, addToastAtom, lastUpdatedAtom, isRefreshingAtom } from '@/store/atoms';
 import { useDataLoader } from '@/hooks';
@@ -67,20 +71,34 @@ export function DashboardPage() {
         {/* Stats Grid */}
         <StatsGrid />
 
+        {/* System Status (Finn only — checkpoint, token status, cron health, mode) */}
+        {showHealth && <SystemStatus />}
+
         {/* Health (Finn only) */}
         {showHealth && healthData && (
           <HealthSummary data={healthData} />
         )}
 
-        {/* Two-column layout for timeline + quick actions */}
+        {/* Job Pipeline + People (Finn only) */}
+        {showHealth && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <JobPipeline />
+            <PeopleWidget />
+          </div>
+        )}
+
+        {/* Two-column layout for timeline + habits */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {timelineEvents.length > 0 && (
             <UpcomingEvents events={timelineEvents} />
           )}
-          {quickActions.length > 0 && (
-            <QuickActions actions={quickActions} />
-          )}
+          {showHealth && <HabitsWidget />}
         </div>
+
+        {/* Quick actions */}
+        {quickActions.length > 0 && (
+          <QuickActions actions={quickActions} />
+        )}
       </div>
     </PageContainer>
   );

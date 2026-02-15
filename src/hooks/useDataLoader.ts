@@ -15,6 +15,21 @@ import {
   connectionStatusAtom,
   lastUpdatedAtom,
   isRefreshingAtom,
+  // New atoms
+  peopleTrackerAtom,
+  jobPipelineAtom,
+  calendarEventsAtom,
+  insightsDataAtom,
+  socialBatteryAtom,
+  habitStreaksAtom,
+  cronHealthAtom,
+  currentModeAtom,
+  ideasAtom,
+  tokenStatusAtom,
+  billsAtom,
+  checkpointAtom,
+  mealPlanAtom,
+  frictionPointsAtom,
 } from '@/store/atoms';
 import {
   checkApiHealth,
@@ -29,7 +44,7 @@ import {
   mockTimelineEvents,
   mockQuickActions,
 } from '@/mocks';
-import type { Agent, MemoryCategory, DNACategory, HealthData, Skill, Todo } from '@/types';
+import type { Agent, MemoryCategory, DNACategory, HealthData, Skill, Todo, TimelineEvent } from '@/types';
 
 // Real agent definitions
 const agents: Agent[] = [
@@ -83,6 +98,22 @@ export function useDataLoader() {
   const [, setConnectionStatus] = useAtom(connectionStatusAtom);
   const [, setLastUpdated] = useAtom(lastUpdatedAtom);
   const [isRefreshing, setIsRefreshing] = useAtom(isRefreshingAtom);
+  // New atoms
+  const [, setPeopleTracker] = useAtom(peopleTrackerAtom);
+  const [, setJobPipeline] = useAtom(jobPipelineAtom);
+  const [, setCalendarEvents] = useAtom(calendarEventsAtom);
+  const [, setInsightsData] = useAtom(insightsDataAtom);
+  const [, setSocialBattery] = useAtom(socialBatteryAtom);
+  const [, setHabitStreaks] = useAtom(habitStreaksAtom);
+  const [, setCronHealth] = useAtom(cronHealthAtom);
+  const [, setCurrentMode] = useAtom(currentModeAtom);
+  const [, setIdeas] = useAtom(ideasAtom);
+  const [, setTokenStatus] = useAtom(tokenStatusAtom);
+  const [, setBills] = useAtom(billsAtom);
+  const [, setCheckpoint] = useAtom(checkpointAtom);
+  const [, setMealPlan] = useAtom(mealPlanAtom);
+  const [, setFrictionPoints] = useAtom(frictionPointsAtom);
+
   const loadingRef = useRef(false);
 
   const loadLiveData = useCallback(async (): Promise<boolean> => {
@@ -111,12 +142,16 @@ export function useDataLoader() {
         getDNAFiles('kira').catch(() => null),
       ]);
 
-      // ── Live health data ──
+      // ── Live health data (fixed: pick record with MOST data) ──
       if (dashboardData?.health && dashboardData.health.length > 0) {
-        // Use the most recent day that has actual data
-        const latest = dashboardData.health.find(h =>
-          h.sleep.score > 0 || h.readiness.score > 0 || h.heartRate.restingHr > 0
-        ) || dashboardData.health[0];
+        const scored = dashboardData.health.map(h => ({
+          record: h,
+          score: (h.sleep.score > 0 ? 1 : 0) + (h.readiness.score > 0 ? 1 : 0) +
+                 (h.activity.score > 0 ? 1 : 0) + (h.heartRate.restingHr > 0 ? 1 : 0) +
+                 h.sleep.score + h.readiness.score,
+        }));
+        scored.sort((a, b) => b.score - a.score);
+        const latest = scored[0].record;
 
         const healthData: HealthData = {
           date: latest.date,
@@ -131,8 +166,6 @@ export function useDataLoader() {
       // ── Live skills ──
       if (dashboardData?.skills && dashboardData.skills.length > 0) {
         setAllSkills(dashboardData.skills as Skill[]);
-      } else {
-        // No API skills — leave empty (or could use mock)
       }
 
       // ── Live tasks → todos ──
@@ -165,11 +198,50 @@ export function useDataLoader() {
       });
       setAgents(updatedAgents);
 
+      // ── ALL new data sources from API ──
+      if (dashboardData) {
+        setPeopleTracker(dashboardData.peopleTracker);
+        setJobPipeline(dashboardData.jobPipeline || []);
+        setCalendarEvents(dashboardData.calendarEvents || []);
+        setInsightsData(dashboardData.insights);
+        setSocialBattery(dashboardData.socialBattery);
+        setHabitStreaks(dashboardData.habitStreaks || []);
+        setCronHealth(dashboardData.cronHealth);
+        setCurrentMode(dashboardData.currentMode);
+        setIdeas(dashboardData.ideas || []);
+        setTokenStatus(dashboardData.tokenStatus);
+        setBills(dashboardData.bills || []);
+        setCheckpoint(dashboardData.checkpoint);
+        setMealPlan(dashboardData.mealPlan);
+        setFrictionPoints(dashboardData.frictionPoints || []);
+      }
+
+      // ── Build timeline from real calendar events ──
+      if (dashboardData?.calendarEvents && dashboardData.calendarEvents.length > 0) {
+        const now = new Date();
+        const upcoming = dashboardData.calendarEvents
+          .filter(e => new Date(e.start) >= now)
+          .slice(0, 8)
+          .map((e, i): TimelineEvent => ({
+            id: `cal-${i}`,
+            time: new Date(e.start),
+            title: e.subject,
+            type: 'event',
+            status: 'pending',
+          }));
+        if (upcoming.length > 0) {
+          setTimelineEvents(upcoming);
+        } else {
+          setTimelineEvents(mockTimelineEvents);
+        }
+      } else {
+        setTimelineEvents(mockTimelineEvents);
+      }
+
       // ── Data without API endpoints yet — use mocks ──
       setAllCrons(mockCrons);
       setAllGoals(mockGoals);
       setAllMissions(mockMissions);
-      setTimelineEvents(mockTimelineEvents);
       setQuickActions(mockQuickActions);
 
       // ── Memory categories ──
@@ -208,7 +280,7 @@ export function useDataLoader() {
       loadingRef.current = false;
       setIsRefreshing(false);
     }
-  }, [setAgents, setAllMemoryCategories, setAllDNACategories, setAllCrons, setAllSkills, setHealthData, setAllGoals, setAllTodos, setAllMissions, setTimelineEvents, setQuickActions, setConnectionStatus, setLastUpdated, setIsRefreshing]);
+  }, [setAgents, setAllMemoryCategories, setAllDNACategories, setAllCrons, setAllSkills, setHealthData, setAllGoals, setAllTodos, setAllMissions, setTimelineEvents, setQuickActions, setConnectionStatus, setLastUpdated, setIsRefreshing, setPeopleTracker, setJobPipeline, setCalendarEvents, setInsightsData, setSocialBattery, setHabitStreaks, setCronHealth, setCurrentMode, setIdeas, setTokenStatus, setBills, setCheckpoint, setMealPlan, setFrictionPoints]);
 
   /** Seed all atoms that don't have live API endpoints with mock data */
   function seedMockData() {

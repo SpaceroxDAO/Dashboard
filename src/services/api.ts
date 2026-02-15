@@ -108,6 +108,12 @@ export async function getAgentStats(agentId: string): Promise<AgentStatsResponse
 }
 
 // Get all dashboard data in a single request
+import type {
+  PeopleTracker, JobOpportunity, CalendarEvent, InsightsData,
+  SocialBattery, HabitStreak, CronHealth, CurrentMode, Idea,
+  TokenStatus, Bill, MealPlan, FrictionPoint, CheckpointData,
+} from '@/types';
+
 export interface DashboardDataResponse {
   health: Array<{
     date: string;
@@ -135,22 +141,26 @@ export interface DashboardDataResponse {
     category: string;
     createdAt: string;
   }>;
-  checkpoint: {
-    content: string;
-    lastModified: string;
-    parsed: {
-      sessionState: string[];
-      todayActivity: string[];
-      pendingTasks: string[];
-      systems: string[];
-      tokenStatus: string[];
-    };
-  } | null;
+  checkpoint: CheckpointData | null;
   stats: {
     memoryCount: number;
     skillCount: number;
     scriptCount: number;
   };
+  // All data sources
+  peopleTracker: PeopleTracker | null;
+  jobPipeline: JobOpportunity[];
+  calendarEvents: CalendarEvent[];
+  insights: InsightsData | null;
+  socialBattery: SocialBattery | null;
+  habitStreaks: HabitStreak[];
+  cronHealth: CronHealth | null;
+  currentMode: CurrentMode | null;
+  ideas: Idea[];
+  tokenStatus: TokenStatus | null;
+  bills: Bill[];
+  mealPlan: MealPlan | null;
+  frictionPoints: FrictionPoint[];
 }
 
 export async function getDashboardData(): Promise<DashboardDataResponse> {
