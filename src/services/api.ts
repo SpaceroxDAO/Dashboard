@@ -112,6 +112,7 @@ import type {
   PeopleTracker, JobOpportunity, CalendarEvent, InsightsData,
   SocialBattery, HabitStreak, CronHealth, CurrentMode, Idea,
   TokenStatus, Bill, MealPlan, FrictionPoint, CheckpointData,
+  FinnSupervision, SystemMonitoring, KiraReflections,
 } from '@/types';
 
 export interface DashboardDataResponse {
@@ -161,6 +162,10 @@ export interface DashboardDataResponse {
   bills: Bill[];
   mealPlan: MealPlan | null;
   frictionPoints: FrictionPoint[];
+  // Kira-specific
+  finnSupervision?: FinnSupervision;
+  systemMonitoring?: SystemMonitoring;
+  kiraReflections?: KiraReflections;
 }
 
 export async function getDashboardData(agentId?: string): Promise<DashboardDataResponse> {

@@ -6,6 +6,7 @@ import type {
   PeopleTracker, JobOpportunity, CalendarEvent, InsightsData,
   SocialBattery, HabitStreak, CronHealth, CurrentMode, Idea,
   TokenStatus, Bill, CheckpointData, MealPlan, FrictionPoint,
+  FinnSupervision, SystemMonitoring, KiraReflections,
 } from '@/types';
 
 // Persisted atoms (localStorage)
@@ -212,6 +213,11 @@ export const mealPlanAtom = atom<MealPlan | null>(null);
 
 // Friction Points
 export const frictionPointsAtom = atom<FrictionPoint[]>([]);
+
+// Kira Supervision Data
+export const finnSupervisionAtom = atom<FinnSupervision | null>(null);
+export const systemMonitoringAtom = atom<SystemMonitoring | null>(null);
+export const kiraReflectionsAtom = atom<KiraReflections | null>(null);
 
 // Dashboard state
 export const lastUpdatedAtom = atom<Date>(new Date());

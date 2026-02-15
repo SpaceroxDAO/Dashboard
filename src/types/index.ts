@@ -380,6 +380,76 @@ export interface FrictionPoint {
   issue: string;
 }
 
+// Kira Supervision Types
+export interface FinnSupervision {
+  mood: {
+    date: string;
+    stress: number | null;
+    clarity: number | null;
+    engagement: number | null;
+    confidence: number | null;
+    verdict: string;
+    actionRequired: string;
+  } | null;
+  workload: {
+    date: string;
+    verdict: string;
+    riskLevel: string;
+    confidence: number | null;
+    indicators: Array<{ metric: string; status: string }>;
+  } | null;
+  cronHealth: string | null;
+  qaVerdict: {
+    date: string;
+    verdict: string;
+    passed: boolean;
+    issues: string[];
+  } | null;
+  tracking: {
+    lastCheckIn: string;
+    strengths: string[];
+    opportunities: string[];
+  } | null;
+}
+
+export interface SystemMonitoring {
+  morningCheck: {
+    date: string;
+    components: Array<{ name: string; status: string; severity: string }>;
+  } | null;
+  p0Alert: {
+    time: string;
+    alert: string;
+    status: string;
+    systems: Array<{ name: string; status: string }>;
+    resolved: boolean;
+  } | null;
+  cronReport: {
+    generated: string;
+    period: string;
+    vmStatus: string;
+    recoveryTime: string;
+    affectedCrons: Array<{ name: string; status: string }>;
+  } | null;
+  syncStatus: {
+    time: string;
+    status: string;
+    kiraOnlyContext: string[];
+    finnOnlyContext: string[];
+  } | null;
+  healthLog: string | null;
+}
+
+export interface KiraReflections {
+  dailyReflection: {
+    date: string;
+    learnings: string[];
+    tomorrowsFocus: string[];
+    summary: string;
+  } | null;
+  dreams: string | null;
+}
+
 // DNA Types
 export interface DNAFile {
   id: string;

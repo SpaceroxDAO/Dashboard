@@ -9,3 +9,6 @@ export { SystemStatus } from './SystemStatus';
 export { JobPipeline } from './JobPipeline';
 export { PeopleWidget } from './PeopleWidget';
 export { HabitsWidget } from './HabitsWidget';
+export { FinnSupervisionPanel } from './FinnSupervisionPanel';
+export { SystemMonitoringPanel } from './SystemMonitoringPanel';
+export { KiraReflectionsPanel } from './KiraReflectionsPanel';

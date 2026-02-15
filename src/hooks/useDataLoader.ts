@@ -32,6 +32,10 @@ import {
   kiraCronHealthAtom,
   mealPlanAtom,
   frictionPointsAtom,
+  // Kira supervision
+  finnSupervisionAtom,
+  systemMonitoringAtom,
+  kiraReflectionsAtom,
 } from '@/store/atoms';
 import {
   checkApiHealth,
@@ -115,6 +119,9 @@ export function useDataLoader() {
   const [, setCheckpoint] = useAtom(checkpointAtom);
   const [, setKiraCheckpoint] = useAtom(kiraCheckpointAtom);
   const [, setKiraCronHealth] = useAtom(kiraCronHealthAtom);
+  const [, setFinnSupervision] = useAtom(finnSupervisionAtom);
+  const [, setSystemMonitoring] = useAtom(systemMonitoringAtom);
+  const [, setKiraReflections] = useAtom(kiraReflectionsAtom);
   const [, setMealPlan] = useAtom(mealPlanAtom);
   const [, setFrictionPoints] = useAtom(frictionPointsAtom);
 
@@ -227,6 +234,13 @@ export function useDataLoader() {
         setFrictionPoints(finnData.frictionPoints || []);
       }
 
+      // ── Kira supervision data ──
+      if (kiraData) {
+        setFinnSupervision(kiraData.finnSupervision || null);
+        setSystemMonitoring(kiraData.systemMonitoring || null);
+        setKiraReflections(kiraData.kiraReflections || null);
+      }
+
       // ── Store checkpoint & cron health per agent ──
       setCheckpoint(finnData?.checkpoint || null);
       setKiraCheckpoint(kiraData?.checkpoint || null);
@@ -298,7 +312,7 @@ export function useDataLoader() {
       loadingRef.current = false;
       setIsRefreshing(false);
     }
-  }, [setAgents, setAllMemoryCategories, setAllDNACategories, setAllCrons, setAllSkills, setHealthData, setAllGoals, setAllTodos, setAllMissions, setTimelineEvents, setQuickActions, setConnectionStatus, setLastUpdated, setIsRefreshing, setPeopleTracker, setJobPipeline, setCalendarEvents, setInsightsData, setSocialBattery, setHabitStreaks, setCronHealth, setCurrentMode, setIdeas, setTokenStatus, setBills, setCheckpoint, setKiraCheckpoint, setKiraCronHealth, setMealPlan, setFrictionPoints]);
+  }, [setAgents, setAllMemoryCategories, setAllDNACategories, setAllCrons, setAllSkills, setHealthData, setAllGoals, setAllTodos, setAllMissions, setTimelineEvents, setQuickActions, setConnectionStatus, setLastUpdated, setIsRefreshing, setPeopleTracker, setJobPipeline, setCalendarEvents, setInsightsData, setSocialBattery, setHabitStreaks, setCronHealth, setCurrentMode, setIdeas, setTokenStatus, setBills, setCheckpoint, setKiraCheckpoint, setKiraCronHealth, setMealPlan, setFrictionPoints, setFinnSupervision, setSystemMonitoring, setKiraReflections]);
 
   /** Seed all atoms that don't have live API endpoints with mock data */
   function seedMockData() {

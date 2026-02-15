@@ -12,6 +12,9 @@ import {
   JobPipeline,
   PeopleWidget,
   HabitsWidget,
+  FinnSupervisionPanel,
+  SystemMonitoringPanel,
+  KiraReflectionsPanel,
 } from '@/components/dashboard';
 import { activeAgentAtom, latestHealthAtom, timelineEventsAtom, quickActionsAtom, addToastAtom, lastUpdatedAtom, isRefreshingAtom } from '@/store/atoms';
 import { useDataLoader } from '@/hooks';
@@ -26,7 +29,8 @@ export function DashboardPage() {
   const [isRefreshing] = useAtom(isRefreshingAtom);
   const { loadLiveData } = useDataLoader();
 
-  const showHealth = activeAgent?.type === 'finn';
+  const isFinn = activeAgent?.type === 'finn';
+  const isKira = activeAgent?.type === 'kira';
 
   const handleRefresh = useCallback(async () => {
     const connected = await loadLiveData();
@@ -74,25 +78,33 @@ export function DashboardPage() {
         {/* System Status (both agents — checkpoint, cron health, mode) */}
         <SystemStatus />
 
-        {/* Health (Finn only — Oura data) */}
-        {showHealth && healthData && (
+        {/* ── Finn-specific panels ── */}
+        {isFinn && healthData && (
           <HealthSummary data={healthData} />
         )}
 
-        {/* Job Pipeline + People (Finn only) */}
-        {showHealth && (
+        {isFinn && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <JobPipeline />
             <PeopleWidget />
           </div>
         )}
 
-        {/* Two-column layout for timeline + habits */}
+        {/* ── Kira-specific panels ── */}
+        {isKira && (
+          <>
+            <FinnSupervisionPanel />
+            <SystemMonitoringPanel />
+            <KiraReflectionsPanel />
+          </>
+        )}
+
+        {/* Two-column layout for timeline + habits/events */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {timelineEvents.length > 0 && (
             <UpcomingEvents events={timelineEvents} />
           )}
-          {showHealth && <HabitsWidget />}
+          {isFinn && <HabitsWidget />}
         </div>
 
         {/* Quick actions */}

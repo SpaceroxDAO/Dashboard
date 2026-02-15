@@ -534,16 +534,33 @@ app.get('/api/dashboard', async (req, res) => {
 
 app.get('/api/dashboard/kira', async (req, res) => {
   try {
-    // Read all key files from Kira's machine in parallel
-    const [checkpointRaw, tasksRaw, performanceRaw, cronReportRaw, syncStatusRaw, healthLogRaw, overnightRaw, allMemoryFiles] = await Promise.all([
+    // Read ALL key files from Kira's machine in parallel
+    const [
+      checkpointRaw, tasksRaw, performanceRaw, cronReportRaw,
+      syncStatusRaw, healthLogRaw, morningCheckRaw,
+      finnMoodRaw, finnCronHealthRaw, workloadRaw,
+      qaLogRaw, dreamsRaw, dailyReflectionRaw,
+      finnTrackingRaw, p0AlertRaw, allMemoryFiles,
+      skillEntries, scriptEntries,
+    ] = await Promise.all([
       sshReadFile('memory/checkpoint.md'),
       sshReadFile('memory/tasks.md'),
       sshReadFile('memory/kira-performance.md'),
       sshReadFile('memory/cron-report.md'),
       sshReadFile('memory/sync-status.md'),
       sshReadFile('memory/health-log.md'),
-      sshReadFile('memory/overnight-log.md'),
+      sshReadFile('memory/morning-systems-check.md'),
+      sshReadFile('memory/finn-mood.md'),
+      sshReadFile('memory/finn-cron-health.md'),
+      sshReadFile('memory/workload.md'),
+      sshReadFile('memory/qa-log.md'),
+      sshReadFile('memory/dreams.md'),
+      sshReadFile('memory/daily-reflections/2026-02-14.md'),
+      sshReadFile('memory/finn-tracking/performance-dashboard.md'),
+      sshReadFile('memory/p0-alert-20260215-1401.md'),
       getKiraRemoteMemoryFiles().catch(() => []),
+      sshExec('dir /b "C:\\Users\\adami\\kira\\skills"').catch(() => ''),
+      sshExec('dir /b "C:\\Users\\adami\\kira\\scripts"').catch(() => ''),
     ]);
 
     // Parse Kira's checkpoint
@@ -559,22 +576,33 @@ app.get('/api/dashboard/kira', async (req, res) => {
     // Parse cron health from performance metrics
     const cronHealth = performanceRaw ? parseKiraPerformance(performanceRaw) : null;
 
-    // Kira's active cron count from task board
-    const cronCountMatch = tasksRaw?.match(/\((\d+) total\)/);
-    const cronCount = cronCountMatch ? parseInt(cronCountMatch[1]) : 0;
+    // Count skills and scripts
+    const skillCount = skillEntries ? skillEntries.trim().split(/\r?\n/).filter(Boolean).length : 0;
+    const scriptCount = scriptEntries ? scriptEntries.trim().split(/\r?\n/).filter(f => f.endsWith('.ps1') || f.endsWith('.py') || f.endsWith('.sh')).length : 0;
 
-    // Recent activity from overnight/sync logs
-    const recentActivity: string[] = [];
-    if (syncStatusRaw) {
-      const timeMatch = syncStatusRaw.match(/\*\*Time:\*\*\s*(.+)/);
-      if (timeMatch) recentActivity.push(`Sync: ${timeMatch[1].trim()}`);
-      const statusMatch = syncStatusRaw.match(/\*\*Status:\*\*\s*(.+)/);
-      if (statusMatch) recentActivity.push(statusMatch[1].trim());
-    }
-    if (overnightRaw) {
-      const lines = overnightRaw.split('\n').filter(l => l.startsWith('- ')).slice(0, 3);
-      recentActivity.push(...lines.map(l => l.replace(/^-\s*/, '')));
-    }
+    // ── Finn Supervision data ──
+    const finnSupervision = {
+      mood: finnMoodRaw ? parseKiraFinnMood(finnMoodRaw) : null,
+      workload: workloadRaw ? parseKiraWorkload(workloadRaw) : null,
+      cronHealth: finnCronHealthRaw || null,
+      qaVerdict: qaLogRaw ? parseKiraQALog(qaLogRaw) : null,
+      tracking: finnTrackingRaw ? parseKiraFinnTracking(finnTrackingRaw) : null,
+    };
+
+    // ── System monitoring data ──
+    const systemMonitoring = {
+      morningCheck: morningCheckRaw ? parseKiraMorningCheck(morningCheckRaw) : null,
+      p0Alert: p0AlertRaw ? parseKiraP0Alert(p0AlertRaw) : null,
+      cronReport: cronReportRaw ? parseKiraCronReport(cronReportRaw) : null,
+      syncStatus: syncStatusRaw ? parseKiraSyncStatus(syncStatusRaw) : null,
+      healthLog: healthLogRaw || null,
+    };
+
+    // ── Kira's own reflections ──
+    const kiraReflections = {
+      dailyReflection: dailyReflectionRaw ? parseKiraDailyReflection(dailyReflectionRaw) : null,
+      dreams: dreamsRaw || null,
+    };
 
     res.json({
       health: [],
@@ -583,10 +611,10 @@ app.get('/api/dashboard/kira', async (req, res) => {
       checkpoint,
       stats: {
         memoryCount: allMemoryFiles.length,
-        skillCount: 0,
-        scriptCount: cronCount,
+        skillCount,
+        scriptCount,
       },
-      // Kira doesn't have these data sources, send empty/null
+      // Standard fields (empty for Kira)
       peopleTracker: null,
       jobPipeline: [],
       calendarEvents: [],
@@ -600,9 +628,10 @@ app.get('/api/dashboard/kira', async (req, res) => {
       bills: [],
       mealPlan: null,
       frictionPoints: [],
-      // Kira-specific data
-      recentActivity,
-      syncStatus: syncStatusRaw || null,
+      // Kira-specific structured data
+      finnSupervision,
+      systemMonitoring,
+      kiraReflections,
     });
   } catch (error) {
     console.error('Kira dashboard error:', error);
@@ -692,6 +721,192 @@ function parseKiraPerformance(content: string): { alert: boolean; failures: numb
     stalled: 0,
     never_run: 0,
     message: `${totalMatch?.[1] || '?'} crons, avg ${avgMatch?.[1] || '?'}ms — ${healthy ? 'HEALTHY' : 'DEGRADED'}`,
+  };
+}
+
+// ─── Kira-specific parsers ───
+
+function parseKiraFinnMood(content: string) {
+  const stressMatch = content.match(/Stress Level\s*\|\s*(\d+)\/10/);
+  const clarityMatch = content.match(/Clarity\s*\|\s*(\d+)\/10/);
+  const engagementMatch = content.match(/Engagement\s*\|\s*(\d+)\/10/);
+  const confidenceMatch = content.match(/Confidence\s*\|\s*(\d+)\/10/);
+  const verdictMatch = content.match(/\*\*Status:\*\*\s*(.+?)(?:\s*\||\n)/);
+  const actionMatch = content.match(/\*\*Action Required:\*\*\s*(.+)/);
+  const dateMatch = content.match(/## (\d{4}-\d{2}-\d{2}T[\d:]+Z)/);
+  return {
+    date: dateMatch?.[1] || '',
+    stress: stressMatch ? parseInt(stressMatch[1]) : null,
+    clarity: clarityMatch ? parseInt(clarityMatch[1]) : null,
+    engagement: engagementMatch ? parseInt(engagementMatch[1]) : null,
+    confidence: confidenceMatch ? parseInt(confidenceMatch[1]) : null,
+    verdict: verdictMatch?.[1]?.trim() || 'Unknown',
+    actionRequired: actionMatch?.[1]?.trim() || 'None',
+  };
+}
+
+function parseKiraWorkload(content: string) {
+  const verdictMatch = content.match(/\*\*Verdict:\*\*\s*(.+)/);
+  const riskMatch = content.match(/\*\*Risk Level:\*\*\s*(.+)/);
+  const dateMatch = content.match(/\*\*Date:\*\*\s*(.+)/);
+  const confidenceMatch = content.match(/\*\*Confidence:\*\*\s*(\d+)%/);
+
+  // Extract indicators table
+  const indicators: Array<{ metric: string; status: string }> = [];
+  const tableRegex = /\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|/g;
+  let match;
+  while ((match = tableRegex.exec(content)) !== null) {
+    if (match[1].includes('Metric') || match[1].includes('---')) continue;
+    indicators.push({ metric: match[1].trim(), status: match[3].trim() });
+  }
+
+  return {
+    date: dateMatch?.[1]?.trim() || '',
+    verdict: verdictMatch?.[1]?.trim() || 'Unknown',
+    riskLevel: riskMatch?.[1]?.trim() || 'Unknown',
+    confidence: confidenceMatch ? parseInt(confidenceMatch[1]) : null,
+    indicators,
+  };
+}
+
+function parseKiraQALog(content: string) {
+  // Get the most recent QA entry (first one after split, since newest is at top)
+  const entries = content.split(/\n---/).filter(e => e.includes('QA Check'));
+  const latest = entries[0] || '';
+  const dateMatch = latest.match(/##\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s*ET)/);
+  // Match verdict line: **✅ PASS** or **❌ FAIL** or similar
+  const verdictMatch = latest.match(/\*\*.*(PASS|FAIL|WARNING).*\*\*.*(?:—|$)/m);
+  const issueLines = latest.split('\n').filter(l => /^\d+\./.test(l.trim()));
+  return {
+    date: dateMatch?.[1] || '',
+    verdict: verdictMatch?.[1]?.trim() || (latest.includes('PASS') ? 'PASS' : latest.includes('FAIL') ? 'FAIL' : 'Unknown'),
+    passed: latest.includes('PASS'),
+    issues: issueLines.map(l => l.replace(/^\d+\.\s*/, '').replace(/\*\*/g, '').trim()),
+  };
+}
+
+function parseKiraFinnTracking(content: string) {
+  const strengths: string[] = [];
+  const opportunities: string[] = [];
+  const lines = content.split('\n');
+  let section = '';
+  for (const line of lines) {
+    if (line.includes('Collaboration Strengths')) section = 'strengths';
+    else if (line.includes('Development Opportunities')) section = 'opportunities';
+    else if (line.startsWith('##')) section = '';
+    else if (section === 'strengths' && line.startsWith('- ')) strengths.push(line.replace(/^-\s*/, ''));
+    else if (section === 'opportunities' && line.startsWith('- ')) opportunities.push(line.replace(/^-\s*/, ''));
+  }
+  const lastCheckMatch = content.match(/Last Check-in:\*\*\s*(.+)/);
+  return {
+    lastCheckIn: lastCheckMatch?.[1]?.trim() || '',
+    strengths: strengths.slice(0, 5),
+    opportunities: opportunities.slice(0, 3),
+  };
+}
+
+function parseKiraMorningCheck(content: string) {
+  const components: Array<{ name: string; status: string; severity: string }> = [];
+  const tableRegex = /\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|/g;
+  let match;
+  while ((match = tableRegex.exec(content)) !== null) {
+    if (match[1].includes('Component') || match[1].includes('---')) continue;
+    components.push({
+      name: match[1].trim(),
+      status: match[2].replace(/\*\*/g, '').trim(),
+      severity: match[4].replace(/\*\*/g, '').trim(),
+    });
+  }
+  const dateMatch = content.match(/\*\*Date:\*\*\s*(.+)/);
+  return {
+    date: dateMatch?.[1]?.trim() || '',
+    components,
+  };
+}
+
+function parseKiraP0Alert(content: string) {
+  const timeMatch = content.match(/\*\*Time:\*\*\s*(.+)/);
+  const alertMatch = content.match(/\*\*Alert:\*\*\s*(.+)/);
+  const statusMatch = content.match(/## Status\s*\n\*\*(.+?)\*\*/);
+  const systems: Array<{ name: string; status: string }> = [];
+  const sysRegex = /\|\s*\*\*(.+?)\*\*\s*\|\s*(.+?)\s*\|/g;
+  let match;
+  while ((match = sysRegex.exec(content)) !== null) {
+    if (match[1].includes('System')) continue;
+    systems.push({ name: match[1].trim(), status: match[2].trim() });
+  }
+  return {
+    time: timeMatch?.[1]?.trim() || '',
+    alert: alertMatch?.[1]?.trim() || '',
+    status: statusMatch?.[1]?.trim() || 'Unknown',
+    systems,
+    resolved: content.includes('RESOLVED') || content.includes('Recovery confirmed'),
+  };
+}
+
+function parseKiraCronReport(content: string) {
+  const generatedMatch = content.match(/\*\*Generated:\*\*\s*(.+)/);
+  const periodMatch = content.match(/\*\*Period:\*\*\s*(.+)/);
+  const vmStatusMatch = content.match(/\*\*VM Status:\*\*\s*(.+)/);
+  const recoveryMatch = content.match(/\*\*Recovery Time:\*\*\s*(.+)/);
+  const affectedCrons: Array<{ name: string; status: string }> = [];
+  const cronRegex = /\|\s*\*\*(.+?)\*\*\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|/g;
+  let match;
+  while ((match = cronRegex.exec(content)) !== null) {
+    if (match[1].includes('Cron')) continue;
+    affectedCrons.push({ name: match[1].trim(), status: match[3].trim() });
+  }
+  return {
+    generated: generatedMatch?.[1]?.trim() || '',
+    period: periodMatch?.[1]?.trim() || '',
+    vmStatus: vmStatusMatch?.[1]?.trim() || '',
+    recoveryTime: recoveryMatch?.[1]?.trim() || '',
+    affectedCrons,
+  };
+}
+
+function parseKiraSyncStatus(content: string) {
+  const timeMatch = content.match(/\*\*Time:\*\*\s*(.+)/);
+  const statusMatch = content.match(/\*\*Status:\*\*\s*(.+)/);
+  const kiraOnly: string[] = [];
+  const finnOnly: string[] = [];
+  let section = '';
+  for (const line of content.split('\n')) {
+    if (line.includes('Kira-Only')) section = 'kira';
+    else if (line.includes('Finn-Only')) section = 'finn';
+    else if (line.startsWith('###')) section = '';
+    else if (section === 'kira' && line.startsWith('- ')) kiraOnly.push(line.replace(/^-\s*/, ''));
+    else if (section === 'finn' && line.startsWith('- ')) finnOnly.push(line.replace(/^-\s*/, ''));
+  }
+  return {
+    time: timeMatch?.[1]?.trim() || '',
+    status: statusMatch?.[1]?.trim() || '',
+    kiraOnlyContext: kiraOnly,
+    finnOnlyContext: finnOnly,
+  };
+}
+
+function parseKiraDailyReflection(content: string) {
+  const dateMatch = content.match(/Daily Reflection \| (.+?) \|/);
+  const learnings: string[] = [];
+  const focus: string[] = [];
+  const summaryMatch = content.match(/\*\*Overall:\*\*\s*(.+)/);
+  let section = '';
+  for (const line of content.split('\n')) {
+    // Check named sections BEFORE the generic ## reset
+    if (line.includes('What I Learned')) { section = 'learn'; continue; }
+    if (line.includes("Tomorrow's Focus")) { section = 'focus'; continue; }
+    if (line.includes('## Summary')) { section = 'summary'; continue; }
+    // Other ## headers (What I Applied, Mistakes, etc.) reset
+    if (line.startsWith('## ')) { section = ''; continue; }
+    if (section === 'learn' && line.startsWith('### ')) learnings.push(line.replace(/^###\s*\d+\.\s*/, '').trim());
+    else if (section === 'focus' && line.startsWith('- ')) focus.push(line.replace(/^-\s*/, '').trim());
+  }
+  return {
+    date: dateMatch?.[1]?.trim() || '',
+    learnings,
+    tomorrowsFocus: focus,
+    summary: summaryMatch?.[1]?.trim() || '',
   };
 }
 
