@@ -1,0 +1,11 @@
+export { DashboardPage } from './Dashboard';
+export { MemoryPage } from './Memory';
+export { CronsPage } from './Crons';
+export { SchedulePage } from './Schedule';
+export { SkillsPage } from './Skills';
+export { SettingsPage } from './Settings';
+export { MorePage } from './More';
+export { GoalsPage } from './Goals';
+export { TodosPage } from './Todos';
+export { MissionsPage } from './Missions';
+export { DNAPage } from './DNA';
