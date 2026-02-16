@@ -747,13 +747,52 @@ const CRONS_JSON_PATH = path.join(AGENTS_BASE_PATH, 'crons.json');
 const LAUNCHD_PATH = path.join(SCRIPTS_PATH, 'launchd');
 
 interface CronEntry {
+  id: string;
   name: string;
-  schedule: { kind: string; expr: string; tz: string };
+  enabled: boolean;
+  schedule: { kind: string; expr?: string; tz?: string; everyMs?: number };
   payload: {
     kind: string;
-    message: string;
-    delivery?: { mode: string; channel: string; to: string };
+    message?: string;
+    text?: string;
   };
+  delivery?: { mode: string; channel: string; to: string; bestEffort?: boolean };
+  state?: { lastRunAtMs?: number; lastStatus?: string; lastDurationMs?: number };
+}
+
+/** Read crons.json which has shape { version, jobs: CronEntry[] } */
+function readCronJobs(data: unknown): CronEntry[] {
+  if (!data) return [];
+  if (Array.isArray(data)) return data;
+  if (typeof data === 'object' && data !== null && 'jobs' in data && Array.isArray((data as any).jobs)) {
+    return (data as any).jobs;
+  }
+  return [];
+}
+
+function everyMsToHumanReadable(ms: number): string {
+  if (ms < 60000) return `Every ${Math.round(ms / 1000)}s`;
+  if (ms < 3600000) return `Every ${Math.round(ms / 60000)} minutes`;
+  if (ms < 86400000) return `Every ${Math.round(ms / 3600000)} hours`;
+  return `Every ${Math.round(ms / 86400000)} days`;
+}
+
+function cronEntrySchedule(entry: CronEntry): { cron: string; timezone: string; humanReadable: string } {
+  if (entry.schedule.kind === 'cron' && entry.schedule.expr) {
+    return {
+      cron: entry.schedule.expr,
+      timezone: entry.schedule.tz || 'America/New_York',
+      humanReadable: cronExprToHumanReadable(entry.schedule.expr),
+    };
+  }
+  if (entry.schedule.kind === 'every' && entry.schedule.everyMs) {
+    return {
+      cron: `every ${entry.schedule.everyMs}ms`,
+      timezone: 'UTC',
+      humanReadable: everyMsToHumanReadable(entry.schedule.everyMs),
+    };
+  }
+  return { cron: 'unknown', timezone: 'UTC', humanReadable: 'Unknown schedule' };
 }
 
 function cronExprToHumanReadable(expr: string): string {
@@ -787,30 +826,25 @@ app.get('/api/agents/:agentId/crons', async (req, res) => {
 
     if (agentId === 'finn') {
       // Parse crons.json
-      const cronsData: CronEntry[] | null = await readJsonFile(CRONS_JSON_PATH);
-      if (cronsData && Array.isArray(cronsData)) {
-        for (const entry of cronsData) {
-          const group = entry.payload.kind === 'systemEvent' ? 'System' :
-                        entry.payload.delivery?.channel === 'telegram' ? 'Notifications' : 'Automation';
-          crons.push({
-            id: entry.name,
-            agentId: 'finn',
-            name: prettyCategoryName(entry.name),
-            description: entry.payload.message.slice(0, 200) + (entry.payload.message.length > 200 ? '...' : ''),
-            schedule: {
-              cron: entry.schedule.expr,
-              timezone: entry.schedule.tz,
-              humanReadable: cronExprToHumanReadable(entry.schedule.expr),
-            },
-            status: 'active',
-            taskGroup: group,
-            source: 'crons.json',
-            delivery: entry.payload.delivery ? {
-              channel: entry.payload.delivery.channel,
-              to: entry.payload.delivery.to,
-            } : undefined,
-          });
-        }
+      const rawCrons = await readJsonFile(CRONS_JSON_PATH);
+      const cronJobs = readCronJobs(rawCrons);
+      for (const entry of cronJobs) {
+        const group = entry.payload.kind === 'systemEvent' ? 'System' :
+                      entry.delivery?.channel === 'telegram' ? 'Notifications' : 'Automation';
+        crons.push({
+          id: entry.name,
+          agentId: 'finn',
+          name: prettyCategoryName(entry.name),
+          description: (() => { const msg = entry.payload.message || entry.payload.text || ''; return msg.slice(0, 200) + (msg.length > 200 ? '...' : ''); })(),
+          schedule: cronEntrySchedule(entry),
+          status: entry.enabled ? (entry.state?.lastStatus === 'error' ? 'error' : 'active') : 'paused',
+          taskGroup: group,
+          source: 'crons.json',
+          delivery: entry.delivery ? {
+            channel: entry.delivery.channel,
+            to: entry.delivery.to,
+          } : undefined,
+        });
       }
 
       // Parse launchd plists
@@ -1337,7 +1371,8 @@ app.get('/api/system-info', async (req, res) => {
 
     const scriptCount = (scriptEntries as string[]).filter(f => f.endsWith('.sh') || f.endsWith('.py') || f.endsWith('.js')).length;
     const skillCount = (skillEntries as any[]).filter((e: any) => e.isDirectory?.()).length;
-    const cronCount = cronsData ? cronsData.length : 0;
+    const cronJobs = readCronJobs(cronsData);
+    const cronCount = cronJobs.length;
     const tokenStatus = tokenStatusContent ? parseTokenStatus(tokenStatusContent) : null;
 
     // Check Kira connectivity
@@ -1580,22 +1615,21 @@ app.get('/api/dashboard', async (req, res) => {
     const quickActionsData = await readJsonFile(path.join(MEMORY_PATH, 'quick-actions.json'));
 
     // Parse crons
+    const cronJobs = readCronJobs(cronsData);
     const liveCrons: Array<any> = [];
-    if (cronsData && Array.isArray(cronsData)) {
-      for (const entry of cronsData) {
-        const group = entry.payload.kind === 'systemEvent' ? 'System' :
-                      entry.payload.delivery?.channel === 'telegram' ? 'Notifications' : 'Automation';
-        liveCrons.push({
-          id: entry.name,
-          agentId: 'finn',
-          name: prettyCategoryName(entry.name),
-          description: entry.payload.message.slice(0, 200),
-          schedule: { cron: entry.schedule.expr, timezone: entry.schedule.tz, humanReadable: cronExprToHumanReadable(entry.schedule.expr) },
-          status: 'active',
-          taskGroup: group,
-          executionHistory: [],
-        });
-      }
+    for (const entry of cronJobs) {
+      const group = entry.payload.kind === 'systemEvent' ? 'System' :
+                    entry.delivery?.channel === 'telegram' ? 'Notifications' : 'Automation';
+      liveCrons.push({
+        id: entry.name,
+        agentId: 'finn',
+        name: prettyCategoryName(entry.name),
+        description: (entry.payload.message || entry.payload.text || '').slice(0, 200),
+        schedule: cronEntrySchedule(entry),
+        status: entry.enabled ? (entry.state?.lastStatus === 'error' ? 'error' : 'active') : 'paused',
+        taskGroup: group,
+        executionHistory: [],
+      });
     }
 
     // Parse goals
@@ -1682,6 +1716,7 @@ app.get('/api/dashboard', async (req, res) => {
         memoryCount: memoryFiles.length,
         skillCount: skillDirs.length,
         scriptCount: scriptFiles.length,
+        cronCount: liveCrons.length,
       },
       // All new data sources
       peopleTracker: peopleTracker || null,
@@ -2321,18 +2356,18 @@ app.get('/api/agents/:agentId/stats', async (req, res) => {
       });
     }
 
-    const [allFiles, skillEntries, scriptEntries] = await Promise.all([
+    const [allFiles, skillEntries, rawCrons] = await Promise.all([
       getAllMemoryFilesRecursive(),
       fs.readdir(SKILLS_PATH, { withFileTypes: true }).catch(() => []),
-      fs.readdir(SCRIPTS_PATH).catch(() => []),
+      readJsonFile(CRONS_JSON_PATH),
     ]);
 
     const skillCount = (skillEntries as any[]).filter((e: any) => e.isDirectory?.()).length;
-    const scriptCount = (scriptEntries as string[]).filter(f => f.endsWith('.sh') || f.endsWith('.py') || f.endsWith('.js')).length;
+    const cronJobs = readCronJobs(rawCrons);
 
     res.json({
       memoryCount: allFiles.length,
-      cronCount: scriptCount,
+      cronCount: cronJobs.length,
       skillCount,
     });
   } catch (error) {

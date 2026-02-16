@@ -213,7 +213,7 @@ export function useDataLoader() {
             ...agent,
             stats: {
               memoryCount: data.stats.memoryCount,
-              cronCount: data.stats.scriptCount,
+              cronCount: data.stats.cronCount ?? data.stats.scriptCount,
               skillCount: data.stats.skillCount,
             },
           };

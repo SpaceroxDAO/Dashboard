@@ -147,6 +147,7 @@ export interface DashboardDataResponse {
     memoryCount: number;
     skillCount: number;
     scriptCount: number;
+    cronCount?: number;
   };
   // All data sources
   peopleTracker: PeopleTracker | null;
