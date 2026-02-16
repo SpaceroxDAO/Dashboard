@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
+import { useAtom } from 'jotai';
 import { DollarSign, TrendingUp, TrendingDown, Zap, Loader2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { Card, Badge } from '@/components/ui';
 import { getCosts } from '@/services/api';
 import type { CostSummary } from '@/services/api';
+import { activeAgentIdAtom } from '@/store/atoms';
 
 function Sparkline({ data, color = 'var(--color-signal-primary)', height = 32 }: { data: number[]; color?: string; height?: number }) {
   if (data.length < 2) return null;
@@ -39,15 +41,19 @@ function formatTokens(n: number): string {
 }
 
 export function CostBreakdown() {
+  const [agentId] = useAtom(activeAgentIdAtom);
   const [data, setData] = useState<CostSummary | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    getCosts(30)
-      .then(setData)
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+    let stale = false;
+    setLoading(true);
+    getCosts(30, agentId)
+      .then(d => { if (!stale) setData(d); })
+      .catch(() => { if (!stale) setData(null); })
+      .finally(() => { if (!stale) setLoading(false); });
+    return () => { stale = true; };
+  }, [agentId]);
 
   if (loading) {
     return (
@@ -63,7 +69,101 @@ export function CostBreakdown() {
   const dailyValues = dailyEntries.map(([, v]) => v);
   const models = Object.entries(data.modelBreakdown)
     .filter(([name]) => name !== 'unknown')
-    .sort(([, a], [, b]) => b.cost - a.cost);
+    .sort(([, a], [, b]) => b.tokens - a.tokens);
+
+  // Kira: token-centric view (free tier, totalCost is always 0)
+  const isKiraTokenView = agentId === 'kira' && data.totalCost === 0 && data.totalInputTokens > 0;
+
+  if (isKiraTokenView) {
+    const totalTokens = data.totalInputTokens + data.totalOutputTokens;
+    return (
+      <Card>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-medium text-text-muted flex items-center gap-2">
+            <Zap className="w-4 h-4" /> Token Usage (30d)
+          </h3>
+          <Badge variant="info">Free tier</Badge>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+          <div>
+            <div className="text-xl font-semibold text-text-bright">{formatTokens(data.totalInputTokens)}</div>
+            <div className="text-xs text-text-dim">Input tokens</div>
+          </div>
+          <div>
+            <div className="text-xl font-semibold text-text-bright">{formatTokens(data.totalOutputTokens)}</div>
+            <div className="text-xs text-text-dim">Output tokens</div>
+          </div>
+          <div>
+            <div className="text-xl font-semibold text-signal-online">{formatTokens(totalTokens)}</div>
+            <div className="text-xs text-text-dim">Total tokens</div>
+          </div>
+          <div>
+            <div className="text-xl font-semibold text-text-bright">{data.recentSessions.length}</div>
+            <div className="text-xs text-text-dim">Sessions</div>
+          </div>
+        </div>
+
+        {dailyValues.length >= 2 && (
+          <div className="mb-4">
+            <div className="text-xs text-text-dim mb-1">Daily tokens</div>
+            <Sparkline data={dailyValues} height={40} />
+            <div className="flex justify-between text-[10px] text-text-dim mt-1">
+              <span>{dailyEntries[0]?.[0]?.slice(5)}</span>
+              <span>{dailyEntries[dailyEntries.length - 1]?.[0]?.slice(5)}</span>
+            </div>
+          </div>
+        )}
+
+        {models.length > 0 && (
+          <div>
+            <div className="text-xs text-text-dim mb-2">By model</div>
+            <div className="space-y-1.5">
+              {models.map(([name, info]) => {
+                const pct = totalTokens > 0 ? (info.tokens / totalTokens) * 100 : 0;
+                return (
+                  <div key={name} className="flex items-center gap-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between text-xs mb-0.5">
+                        <span className="text-text-bright truncate font-mono">{name}</span>
+                        <span className="text-text-dim flex-shrink-0 ml-2">{formatTokens(info.tokens)}</span>
+                      </div>
+                      <div className="h-1 bg-surface-hover rounded-full overflow-hidden">
+                        <motion.div
+                          initial={{ width: 0 }}
+                          animate={{ width: `${pct}%` }}
+                          className="h-full bg-signal-primary rounded-full"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </Card>
+    );
+  }
+
+  // Kira empty state: no data at all
+  const isEmpty = data.totalCost === 0 && data.totalInputTokens === 0 && data.recentSessions.length === 0;
+  if (isEmpty && agentId === 'kira') {
+    return (
+      <Card>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-medium text-text-muted flex items-center gap-2">
+            <Zap className="w-4 h-4" /> Token Usage (30d)
+          </h3>
+        </div>
+        <div className="flex flex-col items-center justify-center py-6 text-text-dim text-sm">
+          <Zap className="w-8 h-8 mb-2 opacity-30" />
+          <p>No session data found</p>
+          <p className="text-xs mt-1">Kira may be offline</p>
+        </div>
+      </Card>
+    );
+  }
 
   return (
     <Card>

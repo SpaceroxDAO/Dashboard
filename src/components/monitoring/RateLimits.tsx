@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react';
+import { useAtom } from 'jotai';
 import { Shield, Loader2 } from 'lucide-react';
 import { Card } from '@/components/ui';
 import { getRateLimits } from '@/services/api';
 import type { RateLimits as RateLimitsData } from '@/services/api';
+import { activeAgentIdAtom } from '@/store/atoms';
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -11,20 +13,24 @@ function formatTokens(n: number): string {
 }
 
 export function RateLimits() {
+  const [agentId] = useAtom(activeAgentIdAtom);
   const [data, setData] = useState<RateLimitsData | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let stale = false;
+    setData(null);
     const load = () => {
-      getRateLimits()
-        .then(setData)
-        .catch(() => {});
+      getRateLimits(agentId)
+        .then(d => { if (!stale) setData(d); })
+        .catch(() => { if (!stale) setData(null); })
+        .finally(() => { if (!stale) setLoading(false); });
     };
     load();
-    setLoading(false);
+
     const interval = setInterval(load, 60_000);
-    return () => clearInterval(interval);
-  }, []);
+    return () => { stale = true; clearInterval(interval); };
+  }, [agentId]);
 
   if (loading && !data) {
     return (
@@ -42,6 +48,9 @@ export function RateLimits() {
         <h3 className="text-sm font-medium text-text-muted flex items-center gap-2">
           <Shield className="w-4 h-4" /> Rate Limits
         </h3>
+        {agentId === 'kira' && (
+          <span className="text-[10px] text-text-dim">NVIDIA API (free tier)</span>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-3">
