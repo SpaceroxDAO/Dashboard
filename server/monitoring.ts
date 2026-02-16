@@ -89,6 +89,7 @@ async function getProjectDirsForAgent(agent: AgentId): Promise<string[]> {
 
 const CLAUDE_PROJECTS_PATH = path.join(os.homedir(), '.claude', 'projects');
 const AGENTS_BASE_PATH = '/Users/lume/clawd';
+const FINN_SESSIONS_PATH = path.join(os.homedir(), '.openclaw', 'agents', 'main', 'sessions');
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 1. COST TRACKING — Parse JSONL session files for token usage
@@ -107,7 +108,12 @@ const MODEL_PRICING: Record<string, { input: number; output: number; cacheWrite:
 const DEFAULT_PRICING = { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.30 }; // Sonnet-class
 
 function getPricing(model: string) {
-  return MODEL_PRICING[model] || DEFAULT_PRICING;
+  if (MODEL_PRICING[model]) return MODEL_PRICING[model];
+  // Try prefix match for short model names (e.g. "claude-opus-4-5" → "claude-opus-4-5-20251101")
+  for (const key of Object.keys(MODEL_PRICING)) {
+    if (key.startsWith(model) || model.startsWith(key)) return MODEL_PRICING[key];
+  }
+  return DEFAULT_PRICING;
 }
 
 function tokenCost(tokens: number, pricePerMillion: number): number {
@@ -179,10 +185,11 @@ async function parseSessionFile(filePath: string): Promise<SessionCost | null> {
         if (!usage) continue;
 
         messageCount++;
-        inputTokens += usage.input_tokens || 0;
-        outputTokens += usage.output_tokens || 0;
-        cacheReadTokens += usage.cache_read_input_tokens || 0;
-        cacheWriteTokens += usage.cache_creation_input_tokens || 0;
+        // Support both Claude Code format (input_tokens) and OpenClaw format (input)
+        inputTokens += usage.input_tokens || usage.input || 0;
+        outputTokens += usage.output_tokens || usage.output || 0;
+        cacheReadTokens += usage.cache_read_input_tokens || usage.cache_read || 0;
+        cacheWriteTokens += usage.cache_creation_input_tokens || usage.cache_write || 0;
 
         if (msg.model && msg.model !== '<synthetic>') model = msg.model;
       } catch { /* skip malformed lines */ }
@@ -334,26 +341,21 @@ async function computeCosts(agent: AgentId = 'finn', days: number = 30): Promise
   cutoff.setDate(cutoff.getDate() - days);
   const cutoffMs = cutoff.getTime();
 
-  // Find agent-filtered project directories
-  const projectDirs = await getProjectDirsForAgent(agent);
+  // Finn reads from local OpenClaw sessions directory
+  const dirPath = FINN_SESSIONS_PATH;
   const allFiles: string[] = [];
 
-  for (const dir of projectDirs) {
-    const dirPath = path.join(CLAUDE_PROJECTS_PATH, dir);
-    try {
-      const stat = await fs.stat(dirPath);
-      if (!stat.isDirectory()) continue;
-      const files = await fs.readdir(dirPath);
-      for (const f of files) {
-        if (!f.endsWith('.jsonl')) continue;
-        const fPath = path.join(dirPath, f);
-        const fStat = await fs.stat(fPath);
-        if (fStat.mtimeMs >= cutoffMs) {
-          allFiles.push(fPath);
-        }
+  try {
+    const files = await fs.readdir(dirPath);
+    for (const f of files) {
+      if (!f.endsWith('.jsonl')) continue;
+      const fPath = path.join(dirPath, f);
+      const fStat = await fs.stat(fPath);
+      if (fStat.mtimeMs >= cutoffMs) {
+        allFiles.push(fPath);
       }
-    } catch { /* skip */ }
-  }
+    }
+  } catch { /* skip */ }
 
   // Parse files in batches to limit memory
   const BATCH_SIZE = 50;
@@ -670,7 +672,7 @@ function isFinnProjectDir(dirName: string): boolean {
   return dirName.startsWith(FINN_PROJECT_DIR_PREFIX);
 }
 
-async function tailFile(filePath: string) {
+async function tailFile(filePath: string, agent: AgentId, format: 'claude' | 'openclaw') {
   try {
     const stat = await fs.stat(filePath);
     const prevOffset = fileOffsets.get(filePath) || stat.size;
@@ -688,69 +690,32 @@ async function tailFile(filePath: string) {
 
     const newLines = buffer.toString('utf-8').trim().split('\n').filter(Boolean);
     for (const line of newLines) {
-      try {
-        const obj = JSON.parse(line);
-        const msg = typeof obj.message === 'object' ? obj.message : null;
-        const type = obj.type || 'unknown';
-        const ts = obj.timestamp || new Date().toISOString();
-
-        // Only broadcast interesting events
-        if (type === 'user' || type === 'assistant') {
-          const content = msg?.content;
-          const text = Array.isArray(content)
-            ? content.find((c: any) => c.type === 'text')?.text
-            : (typeof content === 'string' ? content : undefined);
-
-          // Only broadcast to finn clients (these are all Finn project dirs)
-          broadcastSSE('message', {
-            type,
-            timestamp: ts,
-            text: text?.slice(0, 500),
-            model: msg?.model,
-            sessionId: path.basename(filePath, '.jsonl'),
-            usage: msg?.usage ? {
-              inputTokens: msg.usage.input_tokens || 0,
-              outputTokens: msg.usage.output_tokens || 0,
-            } : undefined,
-          }, 'finn');
-        }
-      } catch { /* skip malformed */ }
+      const evt = parseFeedEvent(line, path.basename(filePath, '.jsonl'), format);
+      if (evt) broadcastSSE('message', evt, agent);
     }
   } catch { /* skip */ }
 }
 
 async function startFileWatching() {
+  // Watch Finn's OpenClaw sessions directory for real-time updates
   try {
-    const projectDirs = await fs.readdir(CLAUDE_PROJECTS_PATH);
-    for (const dir of projectDirs) {
-      // Only watch Finn's project dirs (exclude user's own sessions)
-      if (!isFinnProjectDir(dir)) continue;
-
-      const dirPath = path.join(CLAUDE_PROJECTS_PATH, dir);
-      try {
-        const stat = await fs.stat(dirPath);
-        if (!stat.isDirectory()) continue;
-
-        // Initialize offsets for existing files
-        const files = await fs.readdir(dirPath);
-        for (const f of files) {
-          if (!f.endsWith('.jsonl')) continue;
-          const fPath = path.join(dirPath, f);
-          const fStat = await fs.stat(fPath);
-          fileOffsets.set(fPath, fStat.size);
-        }
-
-        // Watch directory for changes
-        const watcher = watch(dirPath, async (eventType, filename) => {
-          if (!filename?.endsWith('.jsonl')) return;
-          if (sseClients.length === 0) return; // No listeners
-          const fPath = path.join(dirPath, filename);
-          await tailFile(fPath);
-        });
-        watchers.push(watcher);
-      } catch { /* skip */ }
+    const dirPath = FINN_SESSIONS_PATH;
+    const files = await fs.readdir(dirPath);
+    for (const f of files) {
+      if (!f.endsWith('.jsonl')) continue;
+      const fPath = path.join(dirPath, f);
+      const fStat = await fs.stat(fPath);
+      fileOffsets.set(fPath, fStat.size);
     }
-  } catch { /* skip */ }
+
+    const watcher = watch(dirPath, async (eventType, filename) => {
+      if (!filename?.endsWith('.jsonl')) return;
+      if (sseClients.length === 0) return;
+      const fPath = path.join(dirPath, filename);
+      await tailFile(fPath, 'finn', 'openclaw');
+    });
+    watchers.push(watcher);
+  } catch { /* Finn sessions dir not found */ }
 }
 
 startFileWatching();
@@ -835,34 +800,29 @@ function parseFeedEvent(line: string, sessionId: string, format: 'claude' | 'ope
 /** Send recent history from Finn's local JSONL files to a newly connected SSE client. */
 async function backfillFinnFeed(res: Response) {
   try {
-    const projectDirs = await getProjectDirsForAgent('finn');
-    const recentEvents: Array<{ timestamp: string; [k: string]: any }> = [];
+    const dirPath = FINN_SESSIONS_PATH;
+    const files = await fs.readdir(dirPath);
+    const jsonlFiles = files.filter(f => f.endsWith('.jsonl'));
 
-    for (const dir of projectDirs) {
-      const dirPath = path.join(CLAUDE_PROJECTS_PATH, dir);
-      try {
-        const files = await fs.readdir(dirPath);
-        // Sort by filename descending (UUIDs with timestamps) and take most recent files
-        const jsonlFiles = files.filter(f => f.endsWith('.jsonl'));
-        // Stat and sort by mtime to find most recent
-        const withStats = await Promise.all(
-          jsonlFiles.map(async f => {
-            const fPath = path.join(dirPath, f);
-            const fStat = await fs.stat(fPath);
-            return { f, fPath, mtimeMs: fStat.mtimeMs };
-          })
-        );
-        withStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
-        // Take last 10 lines from 3 most recent files
-        for (const { f, fPath } of withStats.slice(0, 3)) {
-          const content = await fs.readFile(fPath, 'utf-8');
-          const lines = content.trim().split('\n');
-          for (const line of lines.slice(-10)) {
-            const evt = parseFeedEvent(line, f.replace('.jsonl', ''), 'claude');
-            if (evt) recentEvents.push(evt);
-          }
-        }
-      } catch { /* skip */ }
+    // Stat and sort by mtime to find most recent session files
+    const withStats = await Promise.all(
+      jsonlFiles.map(async f => {
+        const fPath = path.join(dirPath, f);
+        const fStat = await fs.stat(fPath);
+        return { f, fPath, mtimeMs: fStat.mtimeMs };
+      })
+    );
+    withStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+    const recentEvents: Array<{ timestamp: string; [k: string]: any }> = [];
+    // Take last 10 lines from 3 most recent session files
+    for (const { f, fPath } of withStats.slice(0, 3)) {
+      const content = await fs.readFile(fPath, 'utf-8');
+      const lines = content.trim().split('\n');
+      for (const line of lines.slice(-10)) {
+        const evt = parseFeedEvent(line, f.replace('.jsonl', ''), 'openclaw');
+        if (evt) recentEvents.push(evt);
+      }
     }
 
     recentEvents.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
@@ -1095,53 +1055,53 @@ async function computeHeatmap(agent: AgentId = 'finn'): Promise<HeatmapData> {
   let totalSessions = 0;
   let totalMessages = 0;
 
-  const projectDirs = await getProjectDirsForAgent(agent);
-
+  // Finn reads from local OpenClaw sessions directory
+  const dirPath = FINN_SESSIONS_PATH;
   let fileCount = 0;
-  for (const dir of projectDirs) {
-    const dirPath = path.join(CLAUDE_PROJECTS_PATH, dir);
-    try {
-      const stat = await fs.stat(dirPath);
-      if (!stat.isDirectory()) continue;
-      const files = await fs.readdir(dirPath);
+  try {
+    const files = await fs.readdir(dirPath);
+    for (const f of files) {
+      if (!f.endsWith('.jsonl')) continue;
+      const fPath = path.join(dirPath, f);
+      const fStat = await fs.stat(fPath);
+      if (fStat.mtimeMs < cutoffMs) continue;
 
-      for (const f of files) {
-        if (!f.endsWith('.jsonl')) continue;
-        const fPath = path.join(dirPath, f);
-        const fStat = await fs.stat(fPath);
-        if (fStat.mtimeMs < cutoffMs) continue;
+      totalSessions++;
 
-        totalSessions++;
+      // Read file and extract timestamps — OpenClaw format: type="message", message.role
+      try {
+        const content = await fs.readFile(fPath, 'utf-8');
+        const lines = content.trim().split('\n');
+        for (const line of lines) {
+          try {
+            const obj = JSON.parse(line);
+            if (!obj.timestamp) continue;
+            // OpenClaw: type="message" with message.role = "user"|"assistant"
+            if (obj.type === 'message') {
+              const role = obj.message?.role;
+              if (role !== 'user' && role !== 'assistant') continue;
+            } else if (obj.type !== 'user' && obj.type !== 'assistant') {
+              continue; // fallback for Claude Code format
+            }
+            totalMessages++;
 
-        // Read file and extract timestamps
-        try {
-          const content = await fs.readFile(fPath, 'utf-8');
-          const lines = content.trim().split('\n');
-          for (const line of lines) {
-            try {
-              const obj = JSON.parse(line);
-              if (!obj.timestamp) continue;
-              if (obj.type !== 'user' && obj.type !== 'assistant') continue;
-              totalMessages++;
+            const d = new Date(obj.timestamp);
+            if (d.getTime() < cutoffMs) continue;
 
-              const d = new Date(obj.timestamp);
-              if (d.getTime() < cutoffMs) continue;
+            const dayOfWeek = d.getDay(); // 0=Sun
+            const hour = d.getHours();
+            grid[dayOfWeek][hour]++;
 
-              const dayOfWeek = d.getDay(); // 0=Sun
-              const hour = d.getHours();
-              grid[dayOfWeek][hour]++;
+            const dateStr = d.toISOString().slice(0, 10);
+            dailyActivity[dateStr] = (dailyActivity[dateStr] || 0) + 1;
+          } catch { /* skip */ }
+        }
+      } catch { /* skip */ }
 
-              const dateStr = d.toISOString().slice(0, 10);
-              dailyActivity[dateStr] = (dailyActivity[dateStr] || 0) + 1;
-            } catch { /* skip */ }
-          }
-        } catch { /* skip */ }
-
-        // Yield every 50 files to let other requests through
-        if (++fileCount % 50 === 0) await yieldEventLoop();
-      }
-    } catch { /* skip */ }
-  }
+      // Yield every 50 files to let other requests through
+      if (++fileCount % 50 === 0) await yieldEventLoop();
+    }
+  } catch { /* skip */ }
 
   // Find peak
   let peakHour = 0;
@@ -1250,9 +1210,8 @@ router.get('/api/rate-limits', async (_req: Request, res: Response) => {
       return res.json(stale?.data || ZERO_RATE_LIMITS);
     }
 
-    // Parse recent sessions (last 5 hours for rolling window)
+    // Parse recent sessions (last 5 hours for rolling window) from Finn's OpenClaw sessions
     const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000);
-    const projectDirs = await getProjectDirsForAgent(agent);
 
     let tokensLast5h = 0;
     let tokensLast1h = 0;
@@ -1261,45 +1220,42 @@ router.get('/api/rate-limits', async (_req: Request, res: Response) => {
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
 
     let rlFileCount = 0;
-    for (const dir of projectDirs) {
-      const dirPath = path.join(CLAUDE_PROJECTS_PATH, dir);
-      try {
-        const stat = await fs.stat(dirPath);
-        if (!stat.isDirectory()) continue;
-        const files = await fs.readdir(dirPath);
+    try {
+      const files = await fs.readdir(FINN_SESSIONS_PATH);
+      for (const f of files) {
+        if (!f.endsWith('.jsonl')) continue;
+        const fPath = path.join(FINN_SESSIONS_PATH, f);
+        const fStat = await fs.stat(fPath);
+        if (fStat.mtimeMs < fiveHoursAgo.getTime()) continue;
 
-        for (const f of files) {
-          if (!f.endsWith('.jsonl')) continue;
-          const fPath = path.join(dirPath, f);
-          const fStat = await fs.stat(fPath);
-          if (fStat.mtimeMs < fiveHoursAgo.getTime()) continue;
+        const content = await fs.readFile(fPath, 'utf-8');
+        for (const line of content.trim().split('\n')) {
+          try {
+            const obj = JSON.parse(line);
+            const msg = typeof obj.message === 'object' ? obj.message : null;
+            const usage = msg?.usage;
+            if (!usage || !obj.timestamp) continue;
 
-          const content = await fs.readFile(fPath, 'utf-8');
-          for (const line of content.trim().split('\n')) {
-            try {
-              const obj = JSON.parse(line);
-              const msg = typeof obj.message === 'object' ? obj.message : null;
-              const usage = msg?.usage;
-              if (!usage || !obj.timestamp) continue;
+            const ts = new Date(obj.timestamp);
+            // Support both Claude Code (input_tokens) and OpenClaw (input) formats
+            const totalTokens = (usage.input_tokens || usage.input || 0) +
+              (usage.output_tokens || usage.output || 0) +
+              (usage.cache_read_input_tokens || usage.cacheRead || 0) +
+              (usage.cache_creation_input_tokens || usage.cacheWrite || 0);
 
-              const ts = new Date(obj.timestamp);
-              const totalTokens = (usage.input_tokens || 0) + (usage.output_tokens || 0) +
-                (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
-
-              if (ts >= fiveHoursAgo) {
-                tokensLast5h += totalTokens;
-                requestsLast5h++;
-              }
-              if (ts >= oneHourAgo) {
-                tokensLast1h += totalTokens;
-                requestsLast1h++;
-              }
-            } catch { /* skip */ }
-          }
-          if (++rlFileCount % 50 === 0) await yieldEventLoop();
+            if (ts >= fiveHoursAgo) {
+              tokensLast5h += totalTokens;
+              requestsLast5h++;
+            }
+            if (ts >= oneHourAgo) {
+              tokensLast1h += totalTokens;
+              requestsLast1h++;
+            }
+          } catch { /* skip */ }
         }
-      } catch { /* skip */ }
-    }
+        if (++rlFileCount % 50 === 0) await yieldEventLoop();
+      }
+    } catch { /* skip */ }
 
     res.json({
       rolling5h: { tokens: tokensLast5h, requests: requestsLast5h },
