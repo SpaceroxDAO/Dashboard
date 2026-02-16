@@ -755,11 +755,36 @@ async function startFileWatching() {
 
 startFileWatching();
 
-// Pre-warm caches at startup so first requests don't block the event loop
+// ─── Background cache warming ───
+// Pre-warm both agents at startup, then keep Kira's caches hot on intervals
+// so dashboard loads are always instant regardless of which agent is selected.
+
+async function warmKiraCaches() {
+  try { await computeKiraCosts(30); } catch { /* Kira offline */ }
+  try { await computeKiraHeatmap(); } catch { /* Kira offline */ }
+  try { await computeKiraRateLimits(); } catch { /* Kira offline */ }
+}
+
 setTimeout(async () => {
+  // Finn (local, fast)
   try { await computeCosts('finn'); } catch { /* ignore */ }
   try { await computeHeatmap('finn'); } catch { /* ignore */ }
+  // Kira (SSH, staggered to avoid hammering)
+  setTimeout(() => warmKiraCaches(), 5_000);
 }, 100);
+
+// Kira background refresh: costs every 5 min, heatmap every 10 min, rate limits every 2 min
+setInterval(async () => {
+  try { await computeKiraCosts(30); } catch { /* Kira offline */ }
+}, 5 * 60_000);
+
+setInterval(async () => {
+  try { await computeKiraHeatmap(); } catch { /* Kira offline */ }
+}, 10 * 60_000);
+
+setInterval(async () => {
+  try { await computeKiraRateLimits(); } catch { /* Kira offline */ }
+}, 2 * 60_000);
 
 router.get('/api/live', (req: Request, res: Response) => {
   const agent = getAgentFromReq(req);
@@ -1055,17 +1080,19 @@ router.get('/api/activity/heatmap', async (_req: Request, res: Response) => {
 // 5. RATE LIMIT MONITORING — Track token usage in rolling windows
 // ══════════════════════════════════════════════════════════════════════════════
 
-router.get('/api/rate-limits', async (_req: Request, res: Response) => {
-  try {
-    const agent = getAgentFromReq(_req);
+const KIRA_RL_CACHE_KEY = 'kira-ratelimits';
+const ZERO_RATE_LIMITS = {
+  rolling5h: { tokens: 0, requests: 0 },
+  rolling1h: { tokens: 0, requests: 0 },
+  timestamp: new Date().toISOString(),
+};
 
-    if (agent === 'kira') {
-      const rlData = await withKiraLock('kira-ratelimits', async () => {
-        const rlCacheKey = 'kira-ratelimits';
-        const rlCached = costCaches.get(rlCacheKey);
-        if (rlCached && Date.now() - rlCached.timestamp < 60_000) return rlCached.data;
+async function computeKiraRateLimits() {
+  const rlCached = costCaches.get(KIRA_RL_CACHE_KEY);
+  if (rlCached && Date.now() - rlCached.timestamp < 60_000) return rlCached.data;
 
-        const psScript = `
+  return withKiraLock('kira-ratelimits', async () => {
+    const psScript = `
 $dir = '${KIRA_SESSIONS_PATH}'
 $cutoff = (Get-Date).AddHours(-5)
 $r = @()
@@ -1082,43 +1109,48 @@ Get-ChildItem $dir -Filter '*.jsonl' | Where-Object { $_.LastWriteTime -ge $cuto
 $r | ConvertTo-Json -Compress
 `.trim();
 
-        try {
-          const raw = await sshPowerShell(psScript);
-          if (!raw || raw === 'null') return null;
-          const entries: Array<{ ts: string; inp: number; out: number }> =
-            Array.isArray(JSON.parse(raw)) ? JSON.parse(raw) : [JSON.parse(raw)];
+    try {
+      const raw = await sshPowerShell(psScript);
+      if (!raw || raw === 'null') return null;
+      const entries: Array<{ ts: string; inp: number; out: number }> =
+        Array.isArray(JSON.parse(raw)) ? JSON.parse(raw) : [JSON.parse(raw)];
 
-          const now = Date.now();
-          const oneHourAgo = now - 60 * 60 * 1000;
-          const fiveHoursAgo = now - 5 * 60 * 60 * 1000;
-          let tokens1h = 0, tokens5h = 0, req1h = 0, req5h = 0;
+      const now = Date.now();
+      const oneHourAgo = now - 60 * 60 * 1000;
+      const fiveHoursAgo = now - 5 * 60 * 60 * 1000;
+      let tokens1h = 0, tokens5h = 0, req1h = 0, req5h = 0;
 
-          for (const e of entries) {
-            const ts = new Date(e.ts).getTime();
-            const totalTokens = (e.inp || 0) + (e.out || 0);
-            if (ts >= fiveHoursAgo) { tokens5h += totalTokens; req5h++; }
-            if (ts >= oneHourAgo) { tokens1h += totalTokens; req1h++; }
-          }
+      for (const e of entries) {
+        const ts = new Date(e.ts).getTime();
+        const totalTokens = (e.inp || 0) + (e.out || 0);
+        if (ts >= fiveHoursAgo) { tokens5h += totalTokens; req5h++; }
+        if (ts >= oneHourAgo) { tokens1h += totalTokens; req1h++; }
+      }
 
-          const result = {
-            rolling5h: { tokens: tokens5h, requests: req5h },
-            rolling1h: { tokens: tokens1h, requests: req1h },
-            timestamp: new Date().toISOString(),
-          };
-          costCaches.set(rlCacheKey, { data: result as any, timestamp: Date.now() });
-          return result;
-        } catch (err) {
-          console.error('Kira rate-limits SSH error:', err);
-          return null;
-        }
-      });
-
-      if (rlData) return res.json(rlData);
-      return res.json({
-        rolling5h: { tokens: 0, requests: 0 },
-        rolling1h: { tokens: 0, requests: 0 },
+      const result = {
+        rolling5h: { tokens: tokens5h, requests: req5h },
+        rolling1h: { tokens: tokens1h, requests: req1h },
         timestamp: new Date().toISOString(),
-      });
+      };
+      costCaches.set(KIRA_RL_CACHE_KEY, { data: result as any, timestamp: Date.now() });
+      return result;
+    } catch (err) {
+      console.error('Kira rate-limits SSH error:', err);
+      return null;
+    }
+  });
+}
+
+router.get('/api/rate-limits', async (_req: Request, res: Response) => {
+  try {
+    const agent = getAgentFromReq(_req);
+
+    if (agent === 'kira') {
+      const rlData = await computeKiraRateLimits();
+      if (rlData) return res.json(rlData);
+      // Return last cached data if available, otherwise zeros
+      const stale = costCaches.get(KIRA_RL_CACHE_KEY);
+      return res.json(stale?.data || ZERO_RATE_LIMITS);
     }
 
     // Parse recent sessions (last 5 hours for rolling window)
