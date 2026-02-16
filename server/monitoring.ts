@@ -185,11 +185,11 @@ async function parseSessionFile(filePath: string): Promise<SessionCost | null> {
         if (!usage) continue;
 
         messageCount++;
-        // Support both Claude Code format (input_tokens) and OpenClaw format (input)
+        // Support both Claude Code format (input_tokens) and OpenClaw format (input/cacheRead)
         inputTokens += usage.input_tokens || usage.input || 0;
         outputTokens += usage.output_tokens || usage.output || 0;
-        cacheReadTokens += usage.cache_read_input_tokens || usage.cache_read || 0;
-        cacheWriteTokens += usage.cache_creation_input_tokens || usage.cache_write || 0;
+        cacheReadTokens += usage.cache_read_input_tokens || usage.cacheRead || 0;
+        cacheWriteTokens += usage.cache_creation_input_tokens || usage.cacheWrite || 0;
 
         if (msg.model && msg.model !== '<synthetic>') model = msg.model;
       } catch { /* skip malformed lines */ }
