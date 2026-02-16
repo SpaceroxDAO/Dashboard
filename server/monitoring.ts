@@ -872,8 +872,8 @@ async function backfillFinnFeed(res: Response) {
   } catch { /* skip */ }
 }
 
-/** Send recent history from Kira's sessions via SSH to a newly connected SSE client. */
-async function backfillKiraFeed(res: Response) {
+/** Send recent history from Kira's sessions via SSH to a newly connected SSE client. Returns the latest timestamp sent. */
+async function backfillKiraFeed(res: Response): Promise<string> {
   try {
     const psScript = `
 $dir = '${KIRA_SESSIONS_PATH}'
@@ -884,7 +884,7 @@ Get-ChildItem $dir -Filter '*.jsonl' | Sort-Object LastWriteTime -Descending | S
 Write-Output '---END---'
 `.trim();
     const raw = await sshPowerShell(psScript);
-    if (!raw) return;
+    if (!raw) return '';
 
     const lines = raw.split('\n').filter(l => l.trim() && l.trim() !== '---END---');
     const events: Array<{ timestamp: string; [k: string]: any }> = [];
@@ -893,10 +893,12 @@ Write-Output '---END---'
       if (evt) events.push(evt);
     }
     events.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-    for (const evt of events.slice(-20)) {
+    const toSend = events.slice(-20);
+    for (const evt of toSend) {
       try { res.write(`event: message\ndata: ${JSON.stringify(evt)}\n\n`); } catch { break; }
     }
-  } catch { /* SSH error, skip */ }
+    return toSend.length > 0 ? toSend[toSend.length - 1].timestamp : '';
+  } catch { /* SSH error, skip */ return ''; }
 }
 
 router.get('/api/live', (req: Request, res: Response) => {
@@ -929,9 +931,8 @@ router.get('/api/live', (req: Request, res: Response) => {
   // Kira: backfill + poll the most recently modified session file every 10s
   let kiraPollInterval: ReturnType<typeof setInterval> | null = null;
   if (agent === 'kira') {
-    backfillKiraFeed(res);
-
     let lastSeenTimestamp = '';
+    backfillKiraFeed(res).then(ts => { if (ts) lastSeenTimestamp = ts; });
     const pollKiraFeed = async () => {
       try {
         const psScript = `
@@ -944,7 +945,7 @@ if ($latest) { Get-Content $latest.FullName | Select-Object -Last 20 }
 
         const lines = raw.split('\n').filter(Boolean);
         for (const line of lines) {
-          const evt = parseFeedEvent(line, 'kira-live', 'openclaw');
+          const evt = parseFeedEvent(line, 'kira', 'openclaw');
           if (!evt || !evt.timestamp || evt.timestamp <= lastSeenTimestamp) continue;
           lastSeenTimestamp = evt.timestamp;
           broadcastSSE('message', evt, 'kira');
