@@ -1,10 +1,9 @@
-import { useState, useEffect } from 'react';
 import { useAtom } from 'jotai';
+import { useQuery } from '@tanstack/react-query';
 import { DollarSign, TrendingUp, TrendingDown, Zap, Loader2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { Card, Badge } from '@/components/ui';
 import { getCosts } from '@/services/api';
-import type { CostSummary } from '@/services/api';
 import { activeAgentIdAtom } from '@/store/atoms';
 
 function Sparkline({ data, color = 'var(--color-signal-primary)', height = 32 }: { data: number[]; color?: string; height?: number }) {
@@ -42,20 +41,13 @@ function formatTokens(n: number): string {
 
 export function CostBreakdown() {
   const [agentId] = useAtom(activeAgentIdAtom);
-  const [data, setData] = useState<CostSummary | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { data, isLoading } = useQuery({
+    queryKey: ['costs', agentId, 30],
+    queryFn: () => getCosts(30, agentId),
+    refetchInterval: 2 * 60 * 1000,
+  });
 
-  useEffect(() => {
-    let stale = false;
-    setLoading(true);
-    getCosts(30, agentId)
-      .then(d => { if (!stale) setData(d); })
-      .catch(() => { if (!stale) setData(null); })
-      .finally(() => { if (!stale) setLoading(false); });
-    return () => { stale = true; };
-  }, [agentId]);
-
-  if (loading) {
+  if (isLoading) {
     return (
       <Card className="flex items-center justify-center py-8">
         <Loader2 className="w-5 h-5 animate-spin text-text-dim" />

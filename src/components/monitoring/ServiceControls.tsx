@@ -1,8 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
+import { useAtom } from 'jotai';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Server, RotateCcw, Loader2, CheckCircle, XCircle, HelpCircle } from 'lucide-react';
 import { Card, Badge, Button } from '@/components/ui';
 import { getServices, restartService } from '@/services/api';
-import type { ServiceInfo } from '@/services/api';
+import { activeAgentIdAtom } from '@/store/atoms';
 
 const statusConfig = {
   running: { icon: CheckCircle, color: 'text-signal-online', badge: 'success' as const },
@@ -11,22 +13,16 @@ const statusConfig = {
 };
 
 export function ServiceControls({ onToast }: { onToast?: (msg: string, type: 'success' | 'error') => void }) {
-  const [services, setServices] = useState<ServiceInfo[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [agentId] = useAtom(activeAgentIdAtom);
+  const queryClient = useQueryClient();
   const [restarting, setRestarting] = useState<string | null>(null);
 
-  const loadServices = useCallback(() => {
-    getServices()
-      .then(data => setServices(data.services))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => {
-    loadServices();
-    const interval = setInterval(loadServices, 30_000);
-    return () => clearInterval(interval);
-  }, [loadServices]);
+  const { data, isLoading } = useQuery({
+    queryKey: ['services', agentId],
+    queryFn: () => getServices(agentId).then(d => d.services),
+    refetchInterval: 30_000,
+  });
+  const services = data ?? [];
 
   const handleRestart = useCallback(async (name: string) => {
     setRestarting(name);
@@ -34,23 +30,26 @@ export function ServiceControls({ onToast }: { onToast?: (msg: string, type: 'su
       const result = await restartService(name);
       if (result.success) {
         onToast?.(`Service "${name}" restarted`, 'success');
-        // Reload after a delay for the service to come back up
-        setTimeout(loadServices, 3000);
+        setTimeout(() => {
+          queryClient.invalidateQueries({ queryKey: ['services', agentId] });
+        }, 3000);
       }
     } catch {
       onToast?.(`Failed to restart "${name}"`, 'error');
     } finally {
       setRestarting(null);
     }
-  }, [onToast, loadServices]);
+  }, [onToast, agentId, queryClient]);
 
-  if (loading) {
+  if (isLoading) {
     return (
       <Card className="flex items-center justify-center py-8">
         <Loader2 className="w-5 h-5 animate-spin text-text-dim" />
       </Card>
     );
   }
+
+  const isKira = agentId === 'kira';
 
   return (
     <Card>
@@ -66,6 +65,8 @@ export function ServiceControls({ onToast }: { onToast?: (msg: string, type: 'su
           const config = statusConfig[service.status];
           const StatusIcon = config.icon;
           const isRestarting = restarting === service.name;
+          // Only show restart for Finn's api-server
+          const canRestart = !isKira && service.name === 'api-server';
 
           return (
             <div
@@ -84,7 +85,7 @@ export function ServiceControls({ onToast }: { onToast?: (msg: string, type: 'su
                   {service.uptime && ` — up ${service.uptime}`}
                 </div>
               </div>
-              {service.name === 'api-server' && (
+              {canRestart && (
                 <Button
                   variant="ghost"
                   size="sm"

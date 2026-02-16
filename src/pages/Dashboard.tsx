@@ -6,9 +6,7 @@ import { Button } from '@/components/ui';
 import {
   StatsGrid,
   HealthSummary,
-  UpcomingEvents,
   QuickActions,
-  SystemStatus,
   JobPipeline,
   PeopleWidget,
   HabitsWidget,
@@ -24,7 +22,7 @@ import {
   ServiceControls,
   RateLimits,
 } from '@/components/monitoring';
-import { activeAgentAtom, latestHealthAtom, timelineEventsAtom, quickActionsAtom, addToastAtom, lastUpdatedAtom, isRefreshingAtom } from '@/store/atoms';
+import { activeAgentAtom, latestHealthAtom, quickActionsAtom, addToastAtom, lastUpdatedAtom, isRefreshingAtom } from '@/store/atoms';
 import { useDataLoader } from '@/hooks';
 import { executeQuickAction } from '@/services/api';
 import type { QuickAction } from '@/types';
@@ -32,7 +30,6 @@ import type { QuickAction } from '@/types';
 export function DashboardPage() {
   const [activeAgent] = useAtom(activeAgentAtom);
   const [healthData] = useAtom(latestHealthAtom);
-  const [timelineEvents] = useAtom(timelineEventsAtom);
   const [quickActions] = useAtom(quickActionsAtom);
   const [, addToast] = useAtom(addToastAtom);
   const [lastUpdated] = useAtom(lastUpdatedAtom);
@@ -103,9 +100,6 @@ export function DashboardPage() {
         {/* Stats Grid */}
         <StatsGrid />
 
-        {/* System Status (both agents — checkpoint, cron health, mode) */}
-        <SystemStatus />
-
         {/* ── Finn-specific panels ── */}
         {isFinn && healthData && (
           <HealthSummary data={healthData} />
@@ -127,13 +121,7 @@ export function DashboardPage() {
           </>
         )}
 
-        {/* Two-column layout for timeline + habits/events */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {timelineEvents.length > 0 && (
-            <UpcomingEvents events={timelineEvents} />
-          )}
-          {isFinn && <HabitsWidget />}
-        </div>
+        {isFinn && <HabitsWidget />}
 
         {/* ── Monitoring Section ── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

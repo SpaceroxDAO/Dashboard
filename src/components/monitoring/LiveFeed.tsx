@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useAtom } from 'jotai';
 import { Radio, User, Bot, Pause, Play } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Card, Badge, Button } from '@/components/ui';
 import { getSSEUrl } from '@/services/api';
+import { activeAgentIdAtom } from '@/store/atoms';
 
 interface FeedMessage {
   id: string;
@@ -17,26 +19,38 @@ interface FeedMessage {
 const MAX_MESSAGES = 50;
 
 export function LiveFeed() {
+  const [agentId] = useAtom(activeAgentIdAtom);
   const [messages, setMessages] = useState<FeedMessage[]>([]);
   const [connected, setConnected] = useState(false);
   const [paused, setPaused] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
 
-  const connect = useCallback(() => {
+  const connect = useCallback((agent: string) => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
     }
 
-    const es = new EventSource(getSSEUrl());
+    setConnected(false);
+    setUnavailable(false);
+    setMessages([]);
+
+    const es = new EventSource(getSSEUrl(agent));
     eventSourceRef.current = es;
 
     es.addEventListener('connected', () => {
       setConnected(true);
     });
 
+    es.addEventListener('unavailable', () => {
+      setUnavailable(true);
+    });
+
     es.addEventListener('message', (event) => {
-      if (paused) return;
+      if (pausedRef.current) return;
       try {
         const data = JSON.parse(event.data);
         const msg: FeedMessage = {
@@ -59,16 +73,17 @@ export function LiveFeed() {
       setConnected(false);
       es.close();
       // Reconnect after 5 seconds
-      setTimeout(connect, 5000);
+      setTimeout(() => connect(agent), 5000);
     };
-  }, [paused]);
+  }, []);
 
+  // Reconnect when agent changes
   useEffect(() => {
-    connect();
+    connect(agentId);
     return () => {
       eventSourceRef.current?.close();
     };
-  }, [connect]);
+  }, [agentId, connect]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -87,7 +102,7 @@ export function LiveFeed() {
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-medium text-text-muted flex items-center gap-2">
           <Radio className="w-4 h-4" /> Live Feed
-          {connected && (
+          {connected && !unavailable && (
             <span className="relative flex h-2 w-2">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-signal-online opacity-75"></span>
               <span className="relative inline-flex rounded-full h-2 w-2 bg-signal-online"></span>
@@ -95,15 +110,17 @@ export function LiveFeed() {
           )}
         </h3>
         <div className="flex items-center gap-2">
-          <Badge variant={connected ? 'success' : 'error'}>
-            {connected ? 'Connected' : 'Disconnected'}
+          <Badge variant={unavailable ? 'default' : connected ? 'success' : 'error'}>
+            {unavailable ? 'Unavailable' : connected ? 'Connected' : 'Disconnected'}
           </Badge>
-          <Button
-            variant="ghost"
-            size="sm"
-            icon={paused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
-            onClick={() => setPaused(!paused)}
-          />
+          {!unavailable && (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={paused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+              onClick={() => setPaused(!paused)}
+            />
+          )}
         </div>
       </div>
 
@@ -111,7 +128,13 @@ export function LiveFeed() {
         ref={scrollRef}
         className="h-48 overflow-y-auto space-y-0.5 font-mono text-xs scrollbar-thin"
       >
-        {messages.length === 0 ? (
+        {unavailable ? (
+          <div className="flex flex-col items-center justify-center h-full text-text-dim text-sm">
+            <Radio className="w-6 h-6 mb-2 opacity-30" />
+            <p>Kira uses Kimi API</p>
+            <p className="text-xs mt-1">No live session feed available</p>
+          </div>
+        ) : messages.length === 0 ? (
           <div className="flex items-center justify-center h-full text-text-dim text-sm">
             Waiting for activity...
           </div>

@@ -29,7 +29,8 @@ type AgentId = 'finn' | 'kira';
 
 const FINN_PROJECT_DIR_PREFIX = '-Users-lume';
 const KIRA_SSH_HOST = 'adami@100.117.33.89';
-const KIRA_SESSIONS_PATH = 'C:\\Users\\adami\\.openclaw\\agents\\agents\\kira\\sessions';
+const KIRA_SESSIONS_PATH = 'C:\\Users\\adami\\.openclaw\\agents\\kira\\sessions';
+const KIRA_SESSIONS_PATH_LEGACY = 'C:\\Users\\adami\\.openclaw\\agents\\agents\\kira\\sessions';
 
 // Dedup concurrent SSH calls for the same endpoint
 const kiraInFlight = new Map<string, Promise<unknown>>();
@@ -61,6 +62,9 @@ async function sshExec(command: string): Promise<string> {
   return stdout;
 }
 
+/** SSH ControlMaster — keeps a persistent connection to Kira's PC */
+const SSH_CONTROL_PATH = path.join(os.homedir(), '.ssh', 'controlmasters', 'kira-%r@%h:%p');
+
 /** Run a PowerShell script on Kira's PC via SSH using -EncodedCommand to avoid quoting issues with cmd.exe */
 async function sshPowerShell(script: string): Promise<string> {
   // Encode as UTF-16LE base64 for PowerShell -EncodedCommand
@@ -69,6 +73,9 @@ async function sshPowerShell(script: string): Promise<string> {
     '-o', 'ConnectTimeout=5',
     '-o', 'StrictHostKeyChecking=no',
     '-o', 'BatchMode=yes',
+    '-o', `ControlMaster=auto`,
+    '-o', `ControlPath=${SSH_CONTROL_PATH}`,
+    '-o', 'ControlPersist=600',
     KIRA_SSH_HOST,
     `powershell -NoProfile -EncodedCommand ${encoded}`,
   ], { timeout: 20000 });
@@ -237,24 +244,26 @@ async function computeKiraCosts(days: number = 30): Promise<CostSummary> {
 
   return withKiraLock(cacheKey, async () => {
     const psScript = `
-$dir = '${KIRA_SESSIONS_PATH}'
+$dirs = @('${KIRA_SESSIONS_PATH}','${KIRA_SESSIONS_PATH_LEGACY}')
 $cutoff = (Get-Date).AddDays(-${days})
 $r = @()
-Get-ChildItem $dir -Filter '*.jsonl' | Where-Object { $_.LastWriteTime -ge $cutoff } | ForEach-Object {
-  $first = Get-Content $_.FullName -TotalCount 1 | ConvertFrom-Json
-  $inp = 0; $out = 0; $msgs = 0; $model = 'unknown'; $last = ''
-  foreach ($line in (Get-Content $_.FullName)) {
-    try {
-      $obj = $line | ConvertFrom-Json
-      if ($obj.timestamp) { $last = $obj.timestamp }
-      if ($obj.type -eq 'message' -and $obj.message.role -eq 'assistant' -and $obj.message.usage) {
-        $msgs++; $inp += $obj.message.usage.input; $out += $obj.message.usage.output
-      }
-      if ($obj.type -eq 'model_change') { $model = $obj.modelId }
-    } catch {}
-  }
-  if ($msgs -gt 0) {
-    $r += @{ id=$first.id; ts=$first.timestamp; last=$last; model=$model; inp=$inp; out=$out; msgs=$msgs }
+foreach ($dir in $dirs) {
+  Get-ChildItem $dir -Filter '*.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $cutoff } | ForEach-Object {
+    $first = Get-Content $_.FullName -TotalCount 1 | ConvertFrom-Json
+    $inp = 0; $out = 0; $msgs = 0; $model = 'unknown'; $last = ''
+    foreach ($line in (Get-Content $_.FullName)) {
+      try {
+        $obj = $line | ConvertFrom-Json
+        if ($obj.timestamp) { $last = $obj.timestamp }
+        if ($obj.type -eq 'message' -and $obj.message.role -eq 'assistant' -and $obj.message.usage) {
+          $msgs++; $inp += $obj.message.usage.input; $out += $obj.message.usage.output
+        }
+        if ($obj.type -eq 'model_change') { $model = $obj.modelId }
+      } catch {}
+    }
+    if ($msgs -gt 0) {
+      $r += @{ id=$first.id; ts=$first.timestamp; last=$last; model=$model; inp=$inp; out=$out; msgs=$msgs }
+    }
   }
 }
 $r | ConvertTo-Json -Compress
@@ -958,23 +967,25 @@ async function computeKiraHeatmap(): Promise<HeatmapData> {
 
   return withKiraLock('kira-heatmap', async () => {
     const psScript = `
-$dir = '${KIRA_SESSIONS_PATH}'
+$dirs = @('${KIRA_SESSIONS_PATH}','${KIRA_SESSIONS_PATH_LEGACY}')
 $cutoff = (Get-Date).AddDays(-30)
 $grid = @{}; $daily = @{}; $sessions = 0; $msgs = 0
-Get-ChildItem $dir -Filter '*.jsonl' | Where-Object { $_.LastWriteTime -ge $cutoff } | ForEach-Object {
-  $sessions++
-  foreach ($line in (Get-Content $_.FullName)) {
-    try {
-      $obj = $line | ConvertFrom-Json
-      if ($obj.type -eq 'message' -and ($obj.message.role -eq 'user' -or $obj.message.role -eq 'assistant') -and $obj.timestamp) {
-        $msgs++
-        $d = [datetime]::Parse($obj.timestamp)
-        $key = "$([int]$d.DayOfWeek)-$($d.Hour)"
-        if ($grid.ContainsKey($key)) { $grid[$key]++ } else { $grid[$key] = 1 }
-        $dk = $d.ToString('yyyy-MM-dd')
-        if ($daily.ContainsKey($dk)) { $daily[$dk]++ } else { $daily[$dk] = 1 }
-      }
-    } catch {}
+foreach ($dir in $dirs) {
+  Get-ChildItem $dir -Filter '*.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $cutoff } | ForEach-Object {
+    $sessions++
+    foreach ($line in (Get-Content $_.FullName)) {
+      try {
+        $obj = $line | ConvertFrom-Json
+        if ($obj.type -eq 'message' -and ($obj.message.role -eq 'user' -or $obj.message.role -eq 'assistant') -and $obj.timestamp) {
+          $msgs++
+          $d = [datetime]::Parse($obj.timestamp)
+          $key = "$([int]$d.DayOfWeek)-$($d.Hour)"
+          if ($grid.ContainsKey($key)) { $grid[$key]++ } else { $grid[$key] = 1 }
+          $dk = $d.ToString('yyyy-MM-dd')
+          if ($daily.ContainsKey($dk)) { $daily[$dk]++ } else { $daily[$dk] = 1 }
+        }
+      } catch {}
+    }
   }
 }
 @{ grid = $grid; daily = $daily; sessions = $sessions; msgs = $msgs } | ConvertTo-Json -Compress

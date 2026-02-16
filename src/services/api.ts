@@ -39,7 +39,7 @@ export async function checkApiHealth(): Promise<boolean> {
   try {
     const response = await fetch(`${API_BASE}/api/health`, {
       method: 'GET',
-      signal: AbortSignal.timeout(2000),
+      signal: AbortSignal.timeout(5000),
     });
     return response.ok;
   } catch {
@@ -446,8 +446,12 @@ export interface CostSummary {
   dailyBurnRate: number;
 }
 
-export async function getCosts(days?: number): Promise<CostSummary> {
-  const url = days ? `${API_BASE}/api/costs?days=${days}` : `${API_BASE}/api/costs`;
+export async function getCosts(days?: number, agentId?: string): Promise<CostSummary> {
+  const params = new URLSearchParams();
+  if (days) params.set('days', String(days));
+  if (agentId) params.set('agent', agentId);
+  const qs = params.toString();
+  const url = `${API_BASE}/api/costs${qs ? `?${qs}` : ''}`;
   const response = await fetch(url);
   if (!response.ok) throw new Error('Failed to fetch costs');
   return response.json();
@@ -475,8 +479,9 @@ export interface SystemHealthResponse {
   cpuCount: number;
 }
 
-export async function getSystemHealth(): Promise<SystemHealthResponse> {
-  const response = await fetch(`${API_BASE}/api/system/health`);
+export async function getSystemHealth(agentId?: string): Promise<SystemHealthResponse> {
+  const url = agentId ? `${API_BASE}/api/system/health?agent=${agentId}` : `${API_BASE}/api/system/health`;
+  const response = await fetch(url);
   if (!response.ok) throw new Error('Failed to fetch system health');
   return response.json();
 }
@@ -490,8 +495,9 @@ export interface HeatmapData {
   peakDay: number;
 }
 
-export async function getActivityHeatmap(): Promise<HeatmapData> {
-  const response = await fetch(`${API_BASE}/api/activity/heatmap`);
+export async function getActivityHeatmap(agentId?: string): Promise<HeatmapData> {
+  const url = agentId ? `${API_BASE}/api/activity/heatmap?agent=${agentId}` : `${API_BASE}/api/activity/heatmap`;
+  const response = await fetch(url);
   if (!response.ok) throw new Error('Failed to fetch activity heatmap');
   return response.json();
 }
@@ -502,8 +508,9 @@ export interface RateLimits {
   timestamp: string;
 }
 
-export async function getRateLimits(): Promise<RateLimits> {
-  const response = await fetch(`${API_BASE}/api/rate-limits`);
+export async function getRateLimits(agentId?: string): Promise<RateLimits & { unavailable?: boolean }> {
+  const url = agentId ? `${API_BASE}/api/rate-limits?agent=${agentId}` : `${API_BASE}/api/rate-limits`;
+  const response = await fetch(url);
   if (!response.ok) throw new Error('Failed to fetch rate limits');
   return response.json();
 }
@@ -516,8 +523,9 @@ export interface ServiceInfo {
   description: string;
 }
 
-export async function getServices(): Promise<{ services: ServiceInfo[] }> {
-  const response = await fetch(`${API_BASE}/api/services`);
+export async function getServices(agentId?: string): Promise<{ services: ServiceInfo[] }> {
+  const url = agentId ? `${API_BASE}/api/services?agent=${agentId}` : `${API_BASE}/api/services`;
+  const response = await fetch(url);
   if (!response.ok) throw new Error('Failed to fetch services');
   return response.json();
 }
@@ -529,6 +537,6 @@ export async function restartService(name: string): Promise<{ success: boolean }
   return response.json();
 }
 
-export function getSSEUrl(): string {
-  return `${API_BASE}/api/live`;
+export function getSSEUrl(agentId?: string): string {
+  return agentId ? `${API_BASE}/api/live?agent=${agentId}` : `${API_BASE}/api/live`;
 }

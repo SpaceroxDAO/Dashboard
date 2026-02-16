@@ -1,8 +1,10 @@
-import { useState, useEffect } from 'react';
-import { Cpu, HardDrive, MemoryStick, Activity, Loader2 } from 'lucide-react';
+import { useState } from 'react';
+import { useAtom } from 'jotai';
+import { useQuery } from '@tanstack/react-query';
+import { Cpu, HardDrive, MemoryStick, Activity, Loader2, WifiOff } from 'lucide-react';
 import { Card, Badge } from '@/components/ui';
 import { getSystemHealth } from '@/services/api';
-import type { SystemHealthResponse } from '@/services/api';
+import { activeAgentIdAtom } from '@/store/atoms';
 
 function Sparkline({ data, color, height = 28, width = 80 }: { data: number[]; color: string; height?: number; width?: number }) {
   if (data.length < 2) return null;
@@ -71,27 +73,45 @@ function MetricRow({ icon, label, value, percent, sparkData, color }: {
 }
 
 export function SystemHealth() {
-  const [data, setData] = useState<SystemHealthResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [agentId] = useAtom(activeAgentIdAtom);
+  const [offline, setOffline] = useState(false);
+  const { data, isLoading } = useQuery({
+    queryKey: ['systemHealth', agentId],
+    queryFn: async () => {
+      try {
+        const d = await getSystemHealth(agentId);
+        setOffline(false);
+        return d;
+      } catch {
+        if (agentId === 'kira') setOffline(true);
+        return null;
+      }
+    },
+    refetchInterval: 60_000,
+  });
 
-  useEffect(() => {
-    const load = () => {
-      getSystemHealth()
-        .then(setData)
-        .catch(() => {});
-    };
-    load();
-    setLoading(false);
-
-    // Refresh every 60 seconds
-    const interval = setInterval(load, 60_000);
-    return () => clearInterval(interval);
-  }, []);
-
-  if (loading && !data) {
+  if (isLoading && !data) {
     return (
       <Card className="flex items-center justify-center py-8">
         <Loader2 className="w-5 h-5 animate-spin text-text-dim" />
+      </Card>
+    );
+  }
+
+  if (offline) {
+    return (
+      <Card>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-medium text-text-muted flex items-center gap-2">
+            <Activity className="w-4 h-4" /> System Health
+          </h3>
+          <Badge variant="error">Offline</Badge>
+        </div>
+        <div className="flex flex-col items-center justify-center py-6 text-text-dim text-sm">
+          <WifiOff className="w-8 h-8 mb-2 opacity-30" />
+          <p>Kira's PC is unreachable via SSH</p>
+          <p className="text-xs mt-1">Check Tailscale connection</p>
+        </div>
       </Card>
     );
   }
@@ -110,8 +130,8 @@ export function SystemHealth() {
           <Activity className="w-4 h-4" /> System Health
         </h3>
         <div className="flex items-center gap-2">
-          <Badge variant="default">up {formatUptime(data.uptime)}</Badge>
-          <Badge variant="info">{data.cpuCount} cores</Badge>
+          {data.uptime > 0 && <Badge variant="default">up {formatUptime(data.uptime)}</Badge>}
+          {data.cpuCount > 0 && <Badge variant="info">{data.cpuCount} cores</Badge>}
         </div>
       </div>
 
@@ -145,7 +165,9 @@ export function SystemHealth() {
       <div className="mt-3 pt-3 border-t border-[var(--color-border-panel)] flex items-center justify-between text-[10px] text-text-dim">
         <span>{data.hostname}</span>
         <span>{data.platform}</span>
-        <span>Load: {current.loadAvg.map(l => l.toFixed(1)).join(' / ')}</span>
+        {current.loadAvg.some(l => l > 0) && (
+          <span>Load: {current.loadAvg.map(l => l.toFixed(1)).join(' / ')}</span>
+        )}
       </div>
     </Card>
   );

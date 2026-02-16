@@ -10,9 +10,24 @@ export function useFileApi() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Check if API is available on mount
+  // Check if API is available on mount (retry up to 3 times with backoff)
   useEffect(() => {
-    checkApiHealth().then(setApiAvailable);
+    let cancelled = false;
+    async function check() {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (cancelled) return;
+        const ok = await checkApiHealth();
+        if (ok) {
+          if (!cancelled) setApiAvailable(true);
+          return;
+        }
+        // Wait before retrying (1s, 2s)
+        if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+      }
+      if (!cancelled) setApiAvailable(false);
+    }
+    check();
+    return () => { cancelled = true; };
   }, []);
 
   const readFile = useCallback(async (filePath: string): Promise<string | null> => {

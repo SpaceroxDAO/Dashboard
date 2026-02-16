@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useAtom } from 'jotai';
+import { useQuery } from '@tanstack/react-query';
 import { Calendar, Loader2 } from 'lucide-react';
 import { Card, Badge } from '@/components/ui';
 import { getActivityHeatmap } from '@/services/api';
-import type { HeatmapData } from '@/services/api';
+import { activeAgentIdAtom } from '@/store/atoms';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
@@ -17,17 +18,13 @@ function getIntensityClass(value: number, max: number): string {
 }
 
 export function ActivityHeatmap() {
-  const [data, setData] = useState<HeatmapData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [agentId] = useAtom(activeAgentIdAtom);
+  const { data, isLoading } = useQuery({
+    queryKey: ['heatmap', agentId],
+    queryFn: () => getActivityHeatmap(agentId),
+  });
 
-  useEffect(() => {
-    getActivityHeatmap()
-      .then(setData)
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
-
-  if (loading) {
+  if (isLoading) {
     return (
       <Card className="flex items-center justify-center py-8">
         <Loader2 className="w-5 h-5 animate-spin text-text-dim" />
@@ -36,6 +33,24 @@ export function ActivityHeatmap() {
   }
 
   if (!data) return null;
+
+  // Kira empty state: no session data
+  if (data.totalSessions === 0 && data.totalMessages === 0 && agentId === 'kira') {
+    return (
+      <Card>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-medium text-text-muted flex items-center gap-2">
+            <Calendar className="w-4 h-4" /> Activity (30d)
+          </h3>
+        </div>
+        <div className="flex flex-col items-center justify-center py-6 text-text-dim text-sm">
+          <Calendar className="w-8 h-8 mb-2 opacity-30" />
+          <p>Kira uses Kimi API</p>
+          <p className="text-xs mt-1">No session activity data available</p>
+        </div>
+      </Card>
+    );
+  }
 
   const maxVal = Math.max(...data.grid.flat()) || 1;
 

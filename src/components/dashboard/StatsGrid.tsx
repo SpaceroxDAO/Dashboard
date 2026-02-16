@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAtom } from 'jotai';
-import { FolderOpen, Clock, Zap, Mail, Loader2, RefreshCw } from 'lucide-react';
+import { FolderOpen, Clock, Zap, CalendarDays, Loader2, RefreshCw } from 'lucide-react';
 import { StatCard } from './StatCard';
 import { Card } from '@/components/ui';
-import { activeAgentAtom, agentsAtom, memoryCategoriesAtom, cronsAtom, skillsAtom } from '@/store/atoms';
+import { activeAgentAtom, agentsAtom, memoryCategoriesAtom, cronsAtom, skillsAtom, timelineEventsAtom } from '@/store/atoms';
 
 // Skeleton stat card for loading state
 function StatCardSkeleton() {
@@ -29,6 +29,7 @@ export function StatsGrid() {
   const [memoryCategories] = useAtom(memoryCategoriesAtom);
   const [crons] = useAtom(cronsAtom);
   const [skills] = useAtom(skillsAtom);
+  const [timelineEvents] = useAtom(timelineEventsAtom);
   const [lastRefresh, setLastRefresh] = useState(new Date());
   const [justRefreshed, setJustRefreshed] = useState(false);
 
@@ -73,7 +74,8 @@ export function StatsGrid() {
   }
 
   // Derive counts from live atom data; fall back to agent.stats
-  const liveMemoryCount = memoryCategories.reduce((sum, cat) => sum + cat.files.length, 0);
+  const liveMemoryCount = memoryCategories
+    .reduce((sum, cat) => sum + cat.files.length, 0);
   const liveCronCount = crons.length;
   const liveSkillCount = skills.length;
 
@@ -85,7 +87,7 @@ export function StatsGrid() {
     {
       value: memoryCount,
       label: 'Memory Files',
-      subtitle: 'Next: daily-notes',
+      subtitle: 'Active files',
       icon: <FolderOpen className="w-5 h-5" />,
       onClick: () => navigate('/memory'),
     },
@@ -104,13 +106,11 @@ export function StatsGrid() {
       onClick: () => navigate('/skills'),
     },
     {
-      value: activeAgent.stats.unreadEmails ?? 0,
-      label: 'Emails',
-      subtitle: 'Unread messages',
-      icon: <Mail className="w-5 h-5" />,
-      trend: activeAgent.stats.unreadEmails && activeAgent.stats.unreadEmails > 0
-        ? { value: activeAgent.stats.unreadEmails, direction: 'up' as const }
-        : undefined,
+      value: timelineEvents.length,
+      label: 'Events',
+      subtitle: "Today's upcoming events",
+      icon: <CalendarDays className="w-5 h-5" />,
+      onClick: () => navigate('/schedule'),
     },
   ];
 

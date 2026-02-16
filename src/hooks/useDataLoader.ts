@@ -46,9 +46,6 @@ import {
   getDNAFiles,
   getDashboardData,
 } from '@/services/api';
-import {
-  mockTimelineEvents,
-} from '@/mocks';
 import type { Agent, MemoryCategory, DNACategory, HealthData, Skill, Todo, TimelineEvent, CronJob, Goal, Mission, QuickAction } from '@/types';
 
 // Real agent definitions
@@ -264,13 +261,9 @@ export function useDataLoader() {
             type: 'event',
             status: 'pending',
           }));
-        if (upcoming.length > 0) {
-          setTimelineEvents(upcoming);
-        } else {
-          setTimelineEvents(mockTimelineEvents);
-        }
+        setTimelineEvents(upcoming);
       } else {
-        setTimelineEvents(mockTimelineEvents);
+        setTimelineEvents([]);
       }
 
       // ── Live crons from both agents ──
@@ -388,9 +381,9 @@ export function useDataLoader() {
     }
   }, [setAgents, setAllMemoryCategories, setAllDNACategories, setAllCrons, setAllSkills, setHealthData, setAllGoals, setAllTodos, setAllMissions, setTimelineEvents, setQuickActions, setConnectionStatus, setLastUpdated, setIsRefreshing, setPeopleTracker, setJobPipeline, setCalendarEvents, setInsightsData, setSocialBattery, setHabitStreaks, setCronHealth, setCurrentMode, setIdeas, setTokenStatus, setBills, setCheckpoint, setKiraCheckpoint, setKiraCronHealth, setMealPlan, setFrictionPoints, setFinnSupervision, setSystemMonitoring, setKiraReflections, kanbanDirty, kanbanDragging]);
 
-  /** Seed atoms with mock data when API is offline */
+  /** Seed atoms with empty data when API is offline */
   function seedMockData() {
-    setTimelineEvents(mockTimelineEvents);
+    setTimelineEvents([]);
   }
 
   function agentsWithMockStats(): Agent[] {

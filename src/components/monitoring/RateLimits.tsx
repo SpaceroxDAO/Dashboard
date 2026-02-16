@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
 import { useAtom } from 'jotai';
+import { useQuery } from '@tanstack/react-query';
 import { Shield, Loader2 } from 'lucide-react';
 import { Card } from '@/components/ui';
 import { getRateLimits } from '@/services/api';
@@ -14,33 +14,19 @@ function formatTokens(n: number): string {
 
 export function RateLimits() {
   const [agentId] = useAtom(activeAgentIdAtom);
-  const [data, setData] = useState<RateLimitsData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { data } = useQuery<RateLimitsData>({
+    queryKey: ['rateLimits', agentId],
+    queryFn: () => getRateLimits(agentId),
+    refetchInterval: 60_000,
+  });
 
-  useEffect(() => {
-    let stale = false;
-    setData(null);
-    const load = () => {
-      getRateLimits(agentId)
-        .then(d => { if (!stale) setData(d); })
-        .catch(() => { if (!stale) setData(null); })
-        .finally(() => { if (!stale) setLoading(false); });
-    };
-    load();
-
-    const interval = setInterval(load, 60_000);
-    return () => { stale = true; clearInterval(interval); };
-  }, [agentId]);
-
-  if (loading && !data) {
+  if (!data) {
     return (
       <Card className="flex items-center justify-center py-6">
         <Loader2 className="w-5 h-5 animate-spin text-text-dim" />
       </Card>
     );
   }
-
-  if (!data) return null;
 
   return (
     <Card>
