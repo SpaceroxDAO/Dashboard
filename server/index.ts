@@ -676,6 +676,478 @@ function parseCheckpoint(content: string) {
   };
 }
 
+// ─── Crons (from crons.json gateway + launchd plists) ───
+
+const CRONS_JSON_PATH = path.join(AGENTS_BASE_PATH, 'crons.json');
+const LAUNCHD_PATH = path.join(SCRIPTS_PATH, 'launchd');
+
+interface CronEntry {
+  name: string;
+  schedule: { kind: string; expr: string; tz: string };
+  payload: {
+    kind: string;
+    message: string;
+    delivery?: { mode: string; channel: string; to: string };
+  };
+}
+
+function cronExprToHumanReadable(expr: string): string {
+  const parts = expr.split(' ');
+  if (parts.length !== 5) return expr;
+  const [min, hour, dom, mon, dow] = parts;
+
+  const dowMap: Record<string, string> = { '0': 'Sun', '1': 'Mon', '2': 'Tue', '3': 'Wed', '4': 'Thu', '5': 'Fri', '6': 'Sat' };
+
+  if (dom === '*' && mon === '*' && dow === '*') {
+    if (hour === '*' && min.startsWith('*/')) return `Every ${min.replace('*/', '')} minutes`;
+    if (hour === '*') return `Every hour at :${min.padStart(2, '0')}`;
+    return `Daily at ${hour}:${min.padStart(2, '0')}`;
+  }
+  if (dom === '*' && mon === '*' && dow !== '*') {
+    const days = dow.split(',').map(d => dowMap[d] || d).join(', ');
+    return `${days} at ${hour}:${min.padStart(2, '0')}`;
+  }
+  return expr;
+}
+
+app.get('/api/agents/:agentId/crons', async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    const crons: Array<{
+      id: string; agentId: string; name: string; description: string;
+      schedule: { cron: string; timezone: string; humanReadable: string };
+      status: string; taskGroup: string; source: string;
+      delivery?: { channel: string; to: string };
+    }> = [];
+
+    if (agentId === 'finn') {
+      // Parse crons.json
+      const cronsData: CronEntry[] | null = await readJsonFile(CRONS_JSON_PATH);
+      if (cronsData && Array.isArray(cronsData)) {
+        for (const entry of cronsData) {
+          const group = entry.payload.kind === 'systemEvent' ? 'System' :
+                        entry.payload.delivery?.channel === 'telegram' ? 'Notifications' : 'Automation';
+          crons.push({
+            id: entry.name,
+            agentId: 'finn',
+            name: prettyCategoryName(entry.name),
+            description: entry.payload.message.slice(0, 200) + (entry.payload.message.length > 200 ? '...' : ''),
+            schedule: {
+              cron: entry.schedule.expr,
+              timezone: entry.schedule.tz,
+              humanReadable: cronExprToHumanReadable(entry.schedule.expr),
+            },
+            status: 'active',
+            taskGroup: group,
+            source: 'crons.json',
+            delivery: entry.payload.delivery ? {
+              channel: entry.payload.delivery.channel,
+              to: entry.payload.delivery.to,
+            } : undefined,
+          });
+        }
+      }
+
+      // Parse launchd plists
+      try {
+        const plistFiles = await fs.readdir(LAUNCHD_PATH);
+        for (const file of plistFiles.filter(f => f.endsWith('.plist'))) {
+          const content = await fs.readFile(path.join(LAUNCHD_PATH, file), 'utf-8');
+          const labelMatch = content.match(/<key>Label<\/key>\s*<string>(.+?)<\/string>/);
+          const hourMatch = content.match(/<key>Hour<\/key>\s*<integer>(\d+)<\/integer>/);
+          const minuteMatch = content.match(/<key>Minute<\/key>\s*<integer>(\d+)<\/integer>/);
+          const scriptMatch = content.match(/<string>(\/[^<]+\.(sh|py|js))<\/string>/);
+          const label = labelMatch?.[1] || file.replace('.plist', '');
+          const name = label.replace('com.finn.', '');
+
+          // Skip if already in crons.json
+          if (crons.some(c => c.id === name)) continue;
+
+          const hour = hourMatch?.[1] || '0';
+          const minute = minuteMatch?.[1] || '0';
+          crons.push({
+            id: name,
+            agentId: 'finn',
+            name: prettyCategoryName(name),
+            description: scriptMatch ? `Runs ${path.basename(scriptMatch[1])}` : 'launchd scheduled task',
+            schedule: {
+              cron: `${minute} ${hour} * * *`,
+              timezone: 'America/New_York',
+              humanReadable: `Daily at ${hour}:${minute.padStart(2, '0')}`,
+            },
+            status: 'active',
+            taskGroup: 'launchd',
+            source: 'launchd',
+          });
+        }
+      } catch { /* no launchd directory */ }
+    }
+
+    if (agentId === 'kira') {
+      // Read Kira's cron data from SSH or fallback to known list
+      const cronReport = await sshReadFile('memory/cron-report.md').catch(() => null);
+      const performanceData = await sshReadFile('memory/kira-performance.md').catch(() => null);
+
+      // Parse cron list from kira-development.md or cron-report
+      const knownKiraCrons = [
+        { name: 'discord-monitor', schedule: '*/5 * * * *', group: 'Core Monitoring', desc: 'Watch for Discord messages' },
+        { name: 'sys-health', schedule: '0 * * * *', group: 'Core Monitoring', desc: 'Gateway/system health check' },
+        { name: 'afternoon-check', schedule: '0 15 * * *', group: 'Core Monitoring', desc: 'Deadline warnings' },
+        { name: 'evening-summary', schedule: '0 21 * * *', group: 'Core Monitoring', desc: 'Day recap' },
+        { name: 'morning-check', schedule: '0 8 * * *', group: 'Core Monitoring', desc: 'Morning systems check' },
+        { name: 'midnight-sweep', schedule: '0 0 * * *', group: 'Core Monitoring', desc: 'Midnight maintenance sweep' },
+        { name: 'finn-qa-check', schedule: '*/30 * * * *', group: 'QA & Supervision', desc: 'QA review of Finn outputs' },
+        { name: 'finn-check', schedule: '0 */2 * * *', group: 'QA & Supervision', desc: 'Finn status check' },
+        { name: 'finn-context-backup', schedule: '0 */2 * * *', group: 'QA & Supervision', desc: 'Checkpoint freshness check' },
+        { name: 'finn-mood-check', schedule: '0 12,18 * * *', group: 'QA & Supervision', desc: 'Finn mood assessment' },
+        { name: 'workload-check', schedule: '0 10,14,17 * * *', group: 'QA & Supervision', desc: 'Workload analysis' },
+        { name: 'cron-audit', schedule: '0 3 * * *', group: 'QA & Supervision', desc: 'Audit cron job inventory' },
+        { name: 'learn-from-finn', schedule: '0 13 * * *', group: 'Learning', desc: 'Extract learnings from Finn' },
+        { name: 'daily-reflection', schedule: '0 23 * * *', group: 'Learning', desc: 'Daily meta-reflection' },
+        { name: 'dream-cycle', schedule: '0 4 * * *', group: 'Learning', desc: 'Creative dream processing' },
+        { name: 'sync-check', schedule: '0 6,14,22 * * *', group: 'Maintenance', desc: 'Cross-agent sync status' },
+        { name: 'p0-monitor', schedule: '*/15 * * * *', group: 'Maintenance', desc: 'P0 alert monitoring' },
+        { name: 'memory-cleanup', schedule: '0 5 * * *', group: 'Maintenance', desc: 'Memory file cleanup' },
+      ];
+
+      for (const kc of knownKiraCrons) {
+        crons.push({
+          id: `kira-${kc.name}`,
+          agentId: 'kira',
+          name: prettyCategoryName(kc.name),
+          description: kc.desc,
+          schedule: {
+            cron: kc.schedule,
+            timezone: 'America/New_York',
+            humanReadable: cronExprToHumanReadable(kc.schedule),
+          },
+          status: 'active',
+          taskGroup: kc.group,
+          source: 'known-list',
+        });
+      }
+    }
+
+    res.json({ crons });
+  } catch (error) {
+    console.error('Crons error:', error);
+    res.status(500).json({ error: 'Failed to list crons' });
+  }
+});
+
+// ─── Goals (from memory/goals.md) ───
+
+function parseGoalsFile(content: string, agentId: string) {
+  const goals: Array<{
+    id: string; agentId: string; title: string; description: string;
+    category: string; progress: number; status: string;
+    milestones: Array<{ id: string; title: string; completed: boolean }>;
+  }> = [];
+
+  const sections = content.split(/\n---\n/).filter(s => s.trim());
+
+  for (const section of sections) {
+    const lines = section.trim().split('\n');
+
+    // Extract metadata from HTML comment
+    const metaMatch = section.match(/<!--\s*id:\s*(\S+)\s+.*?status:\s*(\S+)\s+progress:\s*(\d+)\s*-->/);
+    const id = metaMatch?.[1] || `goal-${goals.length + 1}`;
+    const status = metaMatch?.[2] || 'active';
+    const progress = metaMatch ? parseInt(metaMatch[3]) : 0;
+
+    // Extract category from ## header
+    const categoryMatch = section.match(/^## (.+)$/m);
+    const category = categoryMatch?.[1] || 'General';
+
+    // Extract title from ### header
+    const titleMatch = section.match(/^### (.+)$/m);
+    const title = titleMatch?.[1] || '';
+    if (!title) continue;
+
+    // Extract description (first non-header, non-metadata line)
+    const descLines = lines.filter(l =>
+      l.trim() && !l.startsWith('#') && !l.startsWith('<!--') && !l.startsWith('**Milestones') && !l.startsWith('- [')
+    );
+    const description = descLines[0]?.trim() || '';
+
+    // Extract milestones
+    const milestones: Array<{ id: string; title: string; completed: boolean }> = [];
+    const milestoneLines = section.match(/^- \[([ x])\] (.+)$/gm) || [];
+    milestoneLines.forEach((ml, i) => {
+      const m = ml.match(/^- \[([ x])\] (.+)$/);
+      if (m) {
+        milestones.push({
+          id: `${id}-m${i + 1}`,
+          title: m[2].trim(),
+          completed: m[1] === 'x',
+        });
+      }
+    });
+
+    // Recalculate progress from milestones if we have them
+    const computedProgress = milestones.length > 0
+      ? Math.round((milestones.filter(m => m.completed).length / milestones.length) * 100)
+      : progress;
+
+    goals.push({
+      id, agentId, title, description, category,
+      progress: computedProgress, status, milestones,
+    });
+  }
+
+  return goals;
+}
+
+app.get('/api/goals', async (req, res) => {
+  try {
+    const content = await readMdFile(path.join(MEMORY_PATH, 'goals.md'));
+    const goals = content ? parseGoalsFile(content, 'finn') : [];
+    res.json({ goals });
+  } catch (error) {
+    console.error('Goals error:', error);
+    res.status(500).json({ error: 'Failed to read goals' });
+  }
+});
+
+// ─── Missions (from memory/missions.md) ───
+
+function parseMissionsFile(content: string, agentId: string) {
+  const missions: Array<{
+    id: string; agentId: string; name: string; description: string;
+    status: string; progress: number; goalId: string; goalTitle: string;
+    keyResults: Array<{ id: string; title: string; completed: boolean }>;
+  }> = [];
+
+  const sections = content.split(/\n---\n/).filter(s => s.trim());
+
+  for (const section of sections) {
+    // Extract metadata
+    const metaMatch = section.match(/<!--\s*id:\s*(\S+)\s+goal:\s*(\S+)\s+status:\s*(\S+)\s+progress:\s*(\d+)\s*-->/);
+    const id = metaMatch?.[1] || `mission-${missions.length + 1}`;
+    const goalId = metaMatch?.[2] || '';
+    const status = metaMatch?.[3] || 'active';
+    const progress = metaMatch ? parseInt(metaMatch[4]) : 0;
+
+    // Extract category from ## header
+    const categoryMatch = section.match(/^## (.+)$/m);
+    const category = categoryMatch?.[1] || '';
+
+    // Extract title from ### header
+    const titleMatch = section.match(/^### (.+)$/m);
+    const name = titleMatch?.[1] || '';
+    if (!name) continue;
+
+    // Extract description (first non-header line)
+    const lines = section.trim().split('\n');
+    const descLines = lines.filter(l =>
+      l.trim() && !l.startsWith('#') && !l.startsWith('<!--') && !l.startsWith('**') && !l.startsWith('- [')
+    );
+    const description = descLines[0]?.trim() || '';
+
+    // Extract key results
+    const keyResults: Array<{ id: string; title: string; completed: boolean }> = [];
+    const krLines = section.match(/^- \[([ x])\] (.+)$/gm) || [];
+    krLines.forEach((kl, i) => {
+      const m = kl.match(/^- \[([ x])\] (.+)$/);
+      if (m) {
+        keyResults.push({
+          id: `${id}-kr${i + 1}`,
+          title: m[2].trim(),
+          completed: m[1] === 'x',
+        });
+      }
+    });
+
+    // Extract linked goal title
+    const goalLine = section.match(/\*\*Goal:\*\*\s*(.+)/);
+    const goalTitle = goalLine?.[1]?.trim() || '';
+
+    const computedProgress = keyResults.length > 0
+      ? Math.round((keyResults.filter(kr => kr.completed).length / keyResults.length) * 100)
+      : progress;
+
+    missions.push({
+      id, agentId, name, description, status,
+      progress: computedProgress, goalId, goalTitle, keyResults,
+    });
+  }
+
+  return missions;
+}
+
+app.get('/api/missions', async (req, res) => {
+  try {
+    const content = await readMdFile(path.join(MEMORY_PATH, 'missions.md'));
+    const missions = content ? parseMissionsFile(content, 'finn') : [];
+    res.json({ missions });
+  } catch (error) {
+    console.error('Missions error:', error);
+    res.status(500).json({ error: 'Failed to read missions' });
+  }
+});
+
+// ─── Quick Actions (from memory/quick-actions.json) ───
+
+app.get('/api/quick-actions', async (req, res) => {
+  try {
+    const data = await readJsonFile(path.join(MEMORY_PATH, 'quick-actions.json'));
+    const actions = data?.actions || [];
+    res.json({ actions });
+  } catch (error) {
+    console.error('Quick actions error:', error);
+    res.status(500).json({ error: 'Failed to read quick actions' });
+  }
+});
+
+// ─── Quick Action Execution ───
+
+app.post('/api/quick-actions/:actionId/execute', async (req, res) => {
+  try {
+    const { actionId } = req.params;
+
+    const data = await readJsonFile(path.join(MEMORY_PATH, 'quick-actions.json'));
+    const actions = data?.actions || [];
+    const action = actions.find((a: any) => a.id === actionId);
+
+    if (!action) {
+      return res.status(404).json({ error: `Action '${actionId}' not found` });
+    }
+
+    if (!action.scriptPath) {
+      return res.status(400).json({ error: 'Action has no script path' });
+    }
+
+    const scriptFullPath = path.join(AGENTS_BASE_PATH, action.scriptPath);
+
+    // Security: verify path is within workspace
+    if (!scriptFullPath.startsWith(AGENTS_BASE_PATH)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    try {
+      await fs.access(scriptFullPath);
+    } catch {
+      return res.status(404).json({ error: `Script not found: ${action.scriptPath}` });
+    }
+
+    const ext = path.extname(scriptFullPath);
+    let command: string;
+    let args: string[];
+    if (ext === '.js') {
+      command = 'node';
+      args = [scriptFullPath, ...(action.args || [])];
+    } else if (ext === '.py') {
+      command = 'python3';
+      args = [scriptFullPath, ...(action.args || [])];
+    } else {
+      command = 'bash';
+      args = [scriptFullPath, ...(action.args || [])];
+    }
+
+    const { stdout, stderr } = await execFileAsync(command, args, {
+      timeout: 60000,
+      cwd: AGENTS_BASE_PATH,
+      env: { ...process.env, HOME: process.env.HOME || '/Users/lume' },
+    });
+
+    res.json({
+      success: true,
+      actionId,
+      output: stdout.substring(0, 5000),
+      stderr: stderr ? stderr.substring(0, 2000) : undefined,
+      executedAt: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    console.error('Quick action execute error:', error);
+    res.json({
+      success: false,
+      actionId: req.params.actionId,
+      error: error.message || 'Script execution failed',
+      stderr: error.stderr?.substring(0, 2000),
+      executedAt: new Date().toISOString(),
+    });
+  }
+});
+
+// ─── System Info (for Settings page) ───
+
+app.get('/api/system-info', async (req, res) => {
+  try {
+    const [
+      scriptEntries, skillEntries, memoryFiles, cronsData,
+      healthAlerts, tokenStatusContent, checkpointContent,
+    ] = await Promise.all([
+      fs.readdir(SCRIPTS_PATH).catch(() => []),
+      fs.readdir(SKILLS_PATH, { withFileTypes: true }).catch(() => []),
+      getAllMemoryFilesRecursive().catch(() => []),
+      readJsonFile(CRONS_JSON_PATH),
+      readJsonFile(path.join(MEMORY_PATH, 'cron-health-alerts.json')),
+      readMdFile(path.join(MEMORY_PATH, 'token-status.md')),
+      readMdFile(path.join(MEMORY_PATH, 'checkpoint.md')),
+    ]);
+
+    const scriptCount = (scriptEntries as string[]).filter(f => f.endsWith('.sh') || f.endsWith('.py') || f.endsWith('.js')).length;
+    const skillCount = (skillEntries as any[]).filter((e: any) => e.isDirectory?.()).length;
+    const cronCount = cronsData ? cronsData.length : 0;
+    const tokenStatus = tokenStatusContent ? parseTokenStatus(tokenStatusContent) : null;
+
+    // Check Kira connectivity
+    let kiraOnline = false;
+    try {
+      const kiraTest = await sshExec('echo ok');
+      kiraOnline = kiraTest.trim() === 'ok';
+    } catch { /* offline */ }
+
+    res.json({
+      agents: [
+        {
+          id: 'finn',
+          name: 'Finn',
+          emoji: '\u{1F98A}',
+          status: 'online',
+          model: tokenStatus?.model || 'Claude Opus 4.5',
+          platform: 'macOS (Tailscale VM)',
+          features: ['chat', 'memory', 'crons', 'skills', 'health', 'location'],
+          stats: { memoryFiles: memoryFiles.length, scripts: scriptCount, skills: skillCount, crons: cronCount },
+        },
+        {
+          id: 'kira',
+          name: 'Kira',
+          emoji: '\u{1F989}',
+          status: kiraOnline ? 'online' : 'offline',
+          model: 'Kimi / Qwen 2.5 7B',
+          platform: 'Windows PC (Tailscale)',
+          features: ['chat', 'memory', 'crons', 'skills', 'supervision'],
+          stats: { crons: 18, skills: 0, scripts: 0, memoryFiles: 0 },
+        },
+      ],
+      infrastructure: {
+        apiServer: { status: 'online', port: PORT, base: AGENTS_BASE_PATH },
+        tailscale: { funnel: 'https://lumes-virtual-machine.tailf846b2.ts.net/dashboard-api' },
+        deployment: { platform: 'Vercel', url: 'https://agent-dashboard-sand.vercel.app' },
+        gateway: { cronsConfigured: cronCount },
+      },
+      integrations: [
+        { name: 'Telegram', status: 'active', description: 'Primary communication channel' },
+        { name: 'Discord', status: 'active', description: 'Bot-to-bot (Finn ↔ Kira)' },
+        { name: 'Oura Ring', status: 'active', description: 'Health data pipeline' },
+        { name: 'iCloud Find My', status: 'active', description: 'Location tracking' },
+        { name: 'Gmail (gog)', status: 'active', description: 'Email monitoring' },
+        { name: 'Google Calendar', status: 'active', description: 'Personal calendar sync' },
+        { name: 'Outlook', status: 'active', description: 'Work calendar + email' },
+        { name: 'Plaid', status: 'active', description: 'Financial transaction sync' },
+        { name: 'LinkedIn', status: 'active', description: 'Job opportunity monitoring' },
+        { name: 'Spotify', status: 'inactive', description: 'Music playback control' },
+      ],
+      cronHealth: healthAlerts || { alert: false, failures: 0, zombies: 0, stalled: 0, never_run: 0, message: 'OK' },
+      tokenStatus,
+    });
+  } catch (error) {
+    console.error('System info error:', error);
+    res.status(500).json({ error: 'Failed to get system info' });
+  }
+});
+
 // ─── Scripts (cron-like jobs from scripts/ directory) ───
 
 app.get('/api/scripts', async (req, res) => {
@@ -845,7 +1317,46 @@ app.get('/api/dashboard', async (req, res) => {
       readMdFile(path.join(MEMORY_PATH, 'bills.md')),
       readMdFile(path.join(MEMORY_PATH, 'meal-plan-current.md')),
       readMdFile(path.join(MEMORY_PATH, 'friction-points.md')),
+      // Crons, goals, missions, quick actions
+      readJsonFile(CRONS_JSON_PATH),
+      readMdFile(path.join(MEMORY_PATH, 'goals.md')),
+      readMdFile(path.join(MEMORY_PATH, 'missions.md')),
+      readJsonFile(path.join(MEMORY_PATH, 'quick-actions.json')),
     ]);
+
+    // Destructure newly added items
+    const cronsData = (await readJsonFile(CRONS_JSON_PATH)) as CronEntry[] | null;
+    const goalsContent = await readMdFile(path.join(MEMORY_PATH, 'goals.md'));
+    const missionsContent = await readMdFile(path.join(MEMORY_PATH, 'missions.md'));
+    const quickActionsData = await readJsonFile(path.join(MEMORY_PATH, 'quick-actions.json'));
+
+    // Parse crons
+    const liveCrons: Array<any> = [];
+    if (cronsData && Array.isArray(cronsData)) {
+      for (const entry of cronsData) {
+        const group = entry.payload.kind === 'systemEvent' ? 'System' :
+                      entry.payload.delivery?.channel === 'telegram' ? 'Notifications' : 'Automation';
+        liveCrons.push({
+          id: entry.name,
+          agentId: 'finn',
+          name: prettyCategoryName(entry.name),
+          description: entry.payload.message.slice(0, 200),
+          schedule: { cron: entry.schedule.expr, timezone: entry.schedule.tz, humanReadable: cronExprToHumanReadable(entry.schedule.expr) },
+          status: 'active',
+          taskGroup: group,
+          executionHistory: [],
+        });
+      }
+    }
+
+    // Parse goals
+    const goals = goalsContent ? parseGoalsFile(goalsContent, 'finn') : [];
+
+    // Parse missions
+    const missions = missionsContent ? parseMissionsFile(missionsContent, 'finn') : [];
+
+    // Quick actions
+    const quickActions = quickActionsData?.actions || [];
 
     // Parse health — prefer the record with the MOST data (highest sum of scores)
     const healthMdFiles = (healthFiles as string[]).filter(f => f.endsWith('.md')).sort().reverse();
@@ -937,6 +1448,11 @@ app.get('/api/dashboard', async (req, res) => {
       bills,
       mealPlan,
       frictionPoints,
+      // New live data
+      crons: liveCrons,
+      goals,
+      missions,
+      quickActions,
     });
   } catch (error) {
     console.error('Dashboard data error:', error);
@@ -1073,6 +1589,37 @@ app.get('/api/dashboard/kira', async (req, res) => {
       dreams: dreamsRaw || null,
     };
 
+    // Build Kira's known cron list
+    const kiraCronList = [
+      { name: 'discord-monitor', schedule: '*/5 * * * *', group: 'Core Monitoring', desc: 'Watch for Discord messages' },
+      { name: 'sys-health', schedule: '0 * * * *', group: 'Core Monitoring', desc: 'Gateway/system health check' },
+      { name: 'afternoon-check', schedule: '0 15 * * *', group: 'Core Monitoring', desc: 'Deadline warnings' },
+      { name: 'evening-summary', schedule: '0 21 * * *', group: 'Core Monitoring', desc: 'Day recap' },
+      { name: 'morning-check', schedule: '0 8 * * *', group: 'Core Monitoring', desc: 'Morning systems check' },
+      { name: 'midnight-sweep', schedule: '0 0 * * *', group: 'Core Monitoring', desc: 'Midnight maintenance sweep' },
+      { name: 'finn-qa-check', schedule: '*/30 * * * *', group: 'QA & Supervision', desc: 'QA review of Finn outputs' },
+      { name: 'finn-check', schedule: '0 */2 * * *', group: 'QA & Supervision', desc: 'Finn status check' },
+      { name: 'finn-context-backup', schedule: '0 */2 * * *', group: 'QA & Supervision', desc: 'Checkpoint freshness check' },
+      { name: 'finn-mood-check', schedule: '0 12,18 * * *', group: 'QA & Supervision', desc: 'Finn mood assessment' },
+      { name: 'workload-check', schedule: '0 10,14,17 * * *', group: 'QA & Supervision', desc: 'Workload analysis' },
+      { name: 'cron-audit', schedule: '0 3 * * *', group: 'QA & Supervision', desc: 'Audit cron job inventory' },
+      { name: 'learn-from-finn', schedule: '0 13 * * *', group: 'Learning', desc: 'Extract learnings from Finn' },
+      { name: 'daily-reflection', schedule: '0 23 * * *', group: 'Learning', desc: 'Daily meta-reflection' },
+      { name: 'dream-cycle', schedule: '0 4 * * *', group: 'Learning', desc: 'Creative dream processing' },
+      { name: 'sync-check', schedule: '0 6,14,22 * * *', group: 'Maintenance', desc: 'Cross-agent sync status' },
+      { name: 'p0-monitor', schedule: '*/15 * * * *', group: 'Maintenance', desc: 'P0 alert monitoring' },
+      { name: 'memory-cleanup', schedule: '0 5 * * *', group: 'Maintenance', desc: 'Memory file cleanup' },
+    ].map(kc => ({
+      id: `kira-${kc.name}`,
+      agentId: 'kira',
+      name: prettyCategoryName(kc.name),
+      description: kc.desc,
+      schedule: { cron: kc.schedule, timezone: 'America/New_York', humanReadable: cronExprToHumanReadable(kc.schedule) },
+      status: 'active',
+      taskGroup: kc.group,
+      executionHistory: [],
+    }));
+
     res.json({
       health: [],
       skills,
@@ -1097,6 +1644,11 @@ app.get('/api/dashboard/kira', async (req, res) => {
       bills: [],
       mealPlan: null,
       frictionPoints: [],
+      // Live data
+      crons: kiraCronList,
+      goals: [],
+      missions: [],
+      quickActions: [],
       // Kira-specific structured data
       finnSupervision,
       systemMonitoring,

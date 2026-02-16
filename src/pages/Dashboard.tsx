@@ -18,6 +18,8 @@ import {
 } from '@/components/dashboard';
 import { activeAgentAtom, latestHealthAtom, timelineEventsAtom, quickActionsAtom, addToastAtom, lastUpdatedAtom, isRefreshingAtom } from '@/store/atoms';
 import { useDataLoader } from '@/hooks';
+import { executeQuickAction } from '@/services/api';
+import type { QuickAction } from '@/types';
 
 export function DashboardPage() {
   const [activeAgent] = useAtom(activeAgentAtom);
@@ -39,6 +41,20 @@ export function DashboardPage() {
       type: connected ? 'success' : 'info',
     });
   }, [loadLiveData, addToast]);
+
+  const handleQuickAction = useCallback(async (action: QuickAction) => {
+    const result = await executeQuickAction(action.id);
+    if (result.success) {
+      addToast({
+        message: `${action.label} completed`,
+        type: 'success',
+      });
+      // Refresh data since script may have updated files
+      await loadLiveData();
+    } else {
+      throw new Error(result.error || 'Execution failed');
+    }
+  }, [addToast, loadLiveData]);
 
   const formatLastUpdated = (date: Date) => {
     const now = new Date();
@@ -109,7 +125,7 @@ export function DashboardPage() {
 
         {/* Quick actions */}
         {quickActions.length > 0 && (
-          <QuickActions actions={quickActions} />
+          <QuickActions actions={quickActions} onAction={handleQuickAction} />
         )}
       </div>
     </PageContainer>

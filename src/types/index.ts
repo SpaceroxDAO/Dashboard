@@ -202,14 +202,17 @@ export interface Todo {
   completedAt?: Date;
 }
 
-// Mission Types
+// Mission Types (hierarchical: Goals → Missions → Tasks)
 export interface Mission {
   id: string;
   agentId: string;
   name: string;
   description?: string;
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'active' | 'completed' | 'paused' | 'queued' | 'running' | 'failed' | 'cancelled';
   progress?: number;
+  goalId?: string;
+  goalTitle?: string;
+  keyResults?: Array<{ id: string; title: string; completed: boolean }>;
   startedAt?: Date;
   completedAt?: Date;
   createdAt: Date;

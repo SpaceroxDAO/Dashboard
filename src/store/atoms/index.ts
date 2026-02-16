@@ -139,10 +139,10 @@ export const missionsAtom = atom((get) => {
   return missions.filter((m) => m.agentId === agentId);
 });
 export const activeMissionsAtom = atom((get) => {
-  return get(missionsAtom).filter((m) => m.status === 'running' || m.status === 'queued');
+  return get(missionsAtom).filter((m) => m.status === 'active' || m.status === 'running' || m.status === 'queued');
 });
 export const missionHistoryAtom = atom((get) => {
-  return get(missionsAtom).filter((m) => m.status === 'completed' || m.status === 'failed' || m.status === 'cancelled');
+  return get(missionsAtom).filter((m) => m.status === 'completed' || m.status === 'failed' || m.status === 'cancelled' || m.status === 'paused');
 });
 
 // DNA atoms

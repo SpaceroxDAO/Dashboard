@@ -47,13 +47,9 @@ import {
   getDashboardData,
 } from '@/services/api';
 import {
-  mockCrons,
-  mockGoals,
-  mockMissions,
   mockTimelineEvents,
-  mockQuickActions,
 } from '@/mocks';
-import type { Agent, MemoryCategory, DNACategory, HealthData, Skill, Todo, TimelineEvent } from '@/types';
+import type { Agent, MemoryCategory, DNACategory, HealthData, Skill, Todo, TimelineEvent, CronJob, Goal, Mission, QuickAction } from '@/types';
 
 // Real agent definitions
 const agents: Agent[] = [
@@ -277,11 +273,82 @@ export function useDataLoader() {
         setTimelineEvents(mockTimelineEvents);
       }
 
-      // ── Data without API endpoints yet — use mocks ──
-      setAllCrons(mockCrons);
-      setAllGoals(mockGoals);
-      setAllMissions(mockMissions);
-      setQuickActions(mockQuickActions);
+      // ── Live crons from both agents ──
+      const allCrons: CronJob[] = [];
+      if (finnData?.crons && finnData.crons.length > 0) {
+        allCrons.push(...finnData.crons.map(c => ({
+          id: c.id,
+          agentId: c.agentId || 'finn',
+          name: c.name,
+          description: c.description,
+          schedule: { cron: c.schedule.cron, timezone: c.schedule.timezone, humanReadable: c.schedule.humanReadable },
+          status: (c.status || 'active') as 'active' | 'paused' | 'running' | 'error',
+          taskGroup: c.taskGroup,
+          executionHistory: [],
+        })));
+      }
+      if (kiraData?.crons && kiraData.crons.length > 0) {
+        allCrons.push(...kiraData.crons.map(c => ({
+          id: c.id,
+          agentId: c.agentId || 'kira',
+          name: c.name,
+          description: c.description,
+          schedule: { cron: c.schedule.cron, timezone: c.schedule.timezone, humanReadable: c.schedule.humanReadable },
+          status: (c.status || 'active') as 'active' | 'paused' | 'running' | 'error',
+          taskGroup: c.taskGroup,
+          executionHistory: [],
+        })));
+      }
+      setAllCrons(allCrons);
+
+      // ── Live goals ──
+      if (finnData?.goals && finnData.goals.length > 0) {
+        const liveGoals: Goal[] = finnData.goals.map(g => ({
+          id: g.id,
+          agentId: g.agentId || 'finn',
+          title: g.title,
+          description: g.description,
+          category: g.category,
+          progress: g.progress,
+          status: (g.status || 'active') as 'active' | 'completed' | 'paused',
+          milestones: g.milestones.map(m => ({
+            id: m.id,
+            title: m.title,
+            completed: m.completed,
+          })),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }));
+        setAllGoals(liveGoals);
+      }
+
+      // ── Live missions ──
+      if (finnData?.missions && finnData.missions.length > 0) {
+        const liveMissions: Mission[] = finnData.missions.map(m => ({
+          id: m.id,
+          agentId: m.agentId || 'finn',
+          name: m.name,
+          description: m.description,
+          status: (m.status || 'active') as Mission['status'],
+          progress: m.progress,
+          goalId: m.goalId,
+          goalTitle: m.goalTitle,
+          keyResults: m.keyResults,
+          createdAt: new Date(),
+        }));
+        setAllMissions(liveMissions);
+      }
+
+      // ── Live quick actions ──
+      if (finnData?.quickActions && finnData.quickActions.length > 0) {
+        const liveActions: QuickAction[] = finnData.quickActions.map(a => ({
+          id: a.id,
+          label: a.label,
+          icon: a.icon,
+          action: 'run_script',
+        }));
+        setQuickActions(liveActions);
+      }
 
       // ── Memory categories from both agents ──
       const liveMemory: MemoryCategory[] = [];
@@ -321,27 +388,20 @@ export function useDataLoader() {
     }
   }, [setAgents, setAllMemoryCategories, setAllDNACategories, setAllCrons, setAllSkills, setHealthData, setAllGoals, setAllTodos, setAllMissions, setTimelineEvents, setQuickActions, setConnectionStatus, setLastUpdated, setIsRefreshing, setPeopleTracker, setJobPipeline, setCalendarEvents, setInsightsData, setSocialBattery, setHabitStreaks, setCronHealth, setCurrentMode, setIdeas, setTokenStatus, setBills, setCheckpoint, setKiraCheckpoint, setKiraCronHealth, setMealPlan, setFrictionPoints, setFinnSupervision, setSystemMonitoring, setKiraReflections, kanbanDirty, kanbanDragging]);
 
-  /** Seed all atoms that don't have live API endpoints with mock data */
+  /** Seed atoms with mock data when API is offline */
   function seedMockData() {
-    setAllCrons(mockCrons);
-    setAllGoals(mockGoals);
-    setAllMissions(mockMissions);
     setTimelineEvents(mockTimelineEvents);
-    setQuickActions(mockQuickActions);
   }
 
   function agentsWithMockStats(): Agent[] {
-    return agents.map((agent) => {
-      const agentCrons = mockCrons.filter((c) => c.agentId === agent.id);
-      return {
-        ...agent,
-        stats: {
-          ...agent.stats,
-          cronCount: agentCrons.length,
-          skillCount: 0,
-        },
-      };
-    });
+    return agents.map((agent) => ({
+      ...agent,
+      stats: {
+        ...agent.stats,
+        cronCount: 0,
+        skillCount: 0,
+      },
+    }));
   }
 
   return { loadLiveData, isRefreshing };

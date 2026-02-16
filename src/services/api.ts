@@ -162,10 +162,106 @@ export interface DashboardDataResponse {
   bills: Bill[];
   mealPlan: MealPlan | null;
   frictionPoints: FrictionPoint[];
+  // New live data
+  crons?: Array<{
+    id: string;
+    agentId: string;
+    name: string;
+    description: string;
+    schedule: { cron: string; timezone: string; humanReadable: string };
+    status: string;
+    taskGroup: string;
+    executionHistory: unknown[];
+  }>;
+  goals?: Array<{
+    id: string;
+    agentId: string;
+    title: string;
+    description: string;
+    category: string;
+    progress: number;
+    status: string;
+    milestones: Array<{ id: string; title: string; completed: boolean }>;
+  }>;
+  missions?: Array<{
+    id: string;
+    agentId: string;
+    name: string;
+    description: string;
+    status: string;
+    progress: number;
+    goalId: string;
+    goalTitle: string;
+    keyResults: Array<{ id: string; title: string; completed: boolean }>;
+  }>;
+  quickActions?: Array<{
+    id: string;
+    label: string;
+    icon: string;
+    description: string;
+    scriptPath: string;
+    agentId: string;
+    category: string;
+  }>;
   // Kira-specific
   finnSupervision?: FinnSupervision;
   systemMonitoring?: SystemMonitoring;
   kiraReflections?: KiraReflections;
+}
+
+// ─── System Info ───
+
+export interface SystemInfoResponse {
+  agents: Array<{
+    id: string;
+    name: string;
+    emoji: string;
+    status: string;
+    model: string;
+    platform: string;
+    features: string[];
+    stats: Record<string, number>;
+  }>;
+  infrastructure: {
+    apiServer: { status: string; port: number | string; base: string };
+    tailscale: { funnel: string };
+    deployment: { platform: string; url: string };
+    gateway: { cronsConfigured: number };
+  };
+  integrations: Array<{
+    name: string;
+    status: string;
+    description: string;
+  }>;
+  cronHealth: {
+    alert: boolean;
+    failures: number;
+    zombies: number;
+    stalled: number;
+    never_run: number;
+    message: string;
+  };
+  tokenStatus: TokenStatus | null;
+}
+
+export async function getSystemInfo(): Promise<SystemInfoResponse> {
+  const response = await fetch(`${API_BASE}/api/system-info`);
+  if (!response.ok) throw new Error('Failed to fetch system info');
+  return response.json();
+}
+
+// ─── Quick Action Execution ───
+
+export async function executeQuickAction(actionId: string): Promise<{
+  success: boolean;
+  output?: string;
+  error?: string;
+  executedAt: string;
+}> {
+  const response = await fetch(`${API_BASE}/api/quick-actions/${actionId}/execute`, {
+    method: 'POST',
+  });
+  return response.json();
 }
 
 export async function getDashboardData(agentId?: string): Promise<DashboardDataResponse> {
