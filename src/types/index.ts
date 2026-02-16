@@ -465,6 +465,7 @@ export interface KanbanTask {
   priority: 'high' | 'medium' | 'low';
   category?: string;
   column: KanbanColumnId;
+  project?: string;
   description?: string;
 }
 

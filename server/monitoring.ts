@@ -699,8 +699,10 @@ async function tailFile(filePath: string, agent: AgentId, format: 'claude' | 'op
 
     const newLines = buffer.toString('utf-8').trim().split('\n').filter(Boolean);
     for (const line of newLines) {
-      const evt = parseFeedEvent(line, path.basename(filePath, '.jsonl'), format);
-      if (evt) broadcastSSE('message', evt, agent);
+      const events = parseFeedEvent(line, path.basename(filePath, '.jsonl'), format);
+      if (events) {
+        for (const evt of events) broadcastSSE('message', evt, agent);
+      }
     }
   } catch { /* skip */ }
 }
@@ -760,49 +762,272 @@ setInterval(async () => {
   try { await computeKiraRateLimits(); } catch { /* Kira offline */ }
 }, 2 * 60_000);
 
-/** Extract a feed event from a JSONL line. Returns null if not a user/assistant message. */
-function parseFeedEvent(line: string, sessionId: string, format: 'claude' | 'openclaw') {
+// ─── Feed event types ───
+
+type FeedEventType = 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'compaction' | 'model_change';
+type ChannelType = 'discord' | 'telegram' | 'cron' | 'system' | 'chat';
+
+interface FeedEvent {
+  type: FeedEventType;
+  timestamp: string;
+  sessionId: string;
+  text?: string;
+  model?: string;
+  usage?: { inputTokens: number; outputTokens: number };
+  cost?: number;
+  stopReason?: string;
+  hasThinking?: boolean;
+  channel?: ChannelType;
+  channelName?: string;
+  sender?: string;
+  toolName?: string;
+  toolArgs?: string;
+  toolCallId?: string;
+  toolStatus?: 'completed' | 'error';
+  toolDuration?: number;
+  toolError?: string;
+  tokensBefore?: number;
+  provider?: string;
+  modelId?: string;
+}
+
+/** Classify the channel source from a user message text */
+function classifyChannel(text: string): { channel: ChannelType; channelName?: string; sender?: string } {
+  // New JSON metadata format: "conversation_label": "Guild #channel-name..."
+  const convLabelMatch = text.match(/"conversation_label"\s*:\s*"Guild\s+#([^"]+)"/);
+  if (convLabelMatch) {
+    const channelName = '#' + convLabelMatch[1].split(/\s+/)[0];
+    // Extract sender from Sender metadata block
+    const senderMatch = text.match(/"name"\s*:\s*"([^"]+)"/);
+    return { channel: 'discord', channelName, sender: senderMatch?.[1] };
+  }
+
+  // Old-style: [Discord Guild #channel-name ...] Username (tag):
+  const oldDiscordMatch = text.match(/^\[Discord Guild #(\S+)[^\]]*\]\s*(\S+)/);
+  if (oldDiscordMatch) {
+    return { channel: 'discord', channelName: '#' + oldDiscordMatch[1], sender: oldDiscordMatch[2] };
+  }
+
+  // Telegram
+  if (/Telegram/i.test(text.slice(0, 200))) {
+    return { channel: 'telegram' };
+  }
+
+  // Cron: [cron:UUID job-name]
+  const cronMatch = text.match(/^\[cron:[a-f0-9-]+\s+([^\]]+)\]/);
+  if (cronMatch) {
+    return { channel: 'cron', channelName: cronMatch[1].trim() };
+  }
+
+  // System: prefix or NO_REPLY
+  if (/^System:/i.test(text) || text.trim() === 'NO_REPLY') {
+    return { channel: 'system' };
+  }
+
+  return { channel: 'chat' };
+}
+
+/** Strip verbose metadata preambles from user message text */
+function stripChannelMetadata(text: string): string {
+  let cleaned = text;
+
+  // Strip "Conversation info (untrusted metadata): ```json...```" blocks
+  cleaned = cleaned.replace(/Conversation info \(untrusted metadata\):\s*```json[\s\S]*?```\s*/g, '');
+
+  // Strip "Sender (untrusted metadata): ```json...```" blocks
+  cleaned = cleaned.replace(/Sender \(untrusted metadata\):\s*```json[\s\S]*?```\s*/g, '');
+
+  // Strip old-style [Discord Guild #channel...] Username (tag): prefix
+  cleaned = cleaned.replace(/^\[Discord Guild #[^\]]*\]\s*\S+\s*\([^)]*\):\s*/m, '');
+
+  // Strip [cron:UUID name] prefix
+  cleaned = cleaned.replace(/^\[cron:[a-f0-9-]+\s+[^\]]*\]\s*/m, '');
+
+  // Strip System: prefix with timestamp
+  cleaned = cleaned.replace(/^System:\s*(\[[^\]]*\]\s*)?/m, '');
+
+  return cleaned.trim();
+}
+
+/** Brief description of tool call arguments */
+function summarizeToolArgs(toolName: string, args: any): string {
+  if (!args || typeof args !== 'object') return '';
+  try {
+    switch (toolName) {
+      case 'exec':
+        return (args.command || '').slice(0, 100);
+      case 'read':
+      case 'write':
+      case 'edit':
+        return args.file_path || args.path || args.filePath || '';
+      case 'message':
+        return 'send to discord';
+      case 'cron':
+        if (args.action === 'list') return 'list';
+        return args.action ? `${args.action} ${args.name || ''}`.trim() : '';
+      default:
+        return JSON.stringify(args).slice(0, 100);
+    }
+  } catch {
+    return '';
+  }
+}
+
+/** Extract feed events from a JSONL line. Returns an array (one line can produce multiple events). */
+function parseFeedEvent(line: string, sessionId: string, format: 'claude' | 'openclaw'): FeedEvent[] | null {
   try {
     const obj = JSON.parse(line);
     const ts = obj.timestamp;
     if (!ts) return null;
+    const sid = sessionId.slice(0, 8);
 
-    let role: string | undefined;
-    let msg: any;
+    // ─── Compaction event ───
+    if (obj.type === 'compaction') {
+      // Try to extract token count from summary
+      const tokenMatch = obj.summary?.match(/(\d[\d,]+)\s*tokens/);
+      const tokensBefore = tokenMatch ? parseInt(tokenMatch[1].replace(/,/g, ''), 10) : undefined;
+      return [{
+        type: 'compaction',
+        timestamp: ts,
+        sessionId: sid,
+        tokensBefore,
+        text: obj.summary?.match(/<modified-files>([\s\S]*?)<\/modified-files>/)?.[1]?.trim(),
+      }];
+    }
 
+    // ─── Model change event ───
+    if (obj.type === 'model_change') {
+      return [{
+        type: 'model_change',
+        timestamp: ts,
+        sessionId: sid,
+        provider: obj.provider,
+        modelId: obj.modelId,
+      }];
+    }
+
+    // ─── Skip non-message types ───
     if (format === 'openclaw') {
       if (obj.type !== 'message') return null;
-      msg = typeof obj.message === 'object' ? obj.message : null;
-      role = msg?.role;
     } else {
-      // Claude Code: type is 'user' or 'assistant'
       if (obj.type !== 'user' && obj.type !== 'assistant') return null;
-      role = obj.type;
-      msg = typeof obj.message === 'object' ? obj.message : null;
+    }
+
+    const msg = typeof obj.message === 'object' ? obj.message : null;
+    if (!msg) return null;
+
+    const role = format === 'openclaw' ? msg.role : obj.type;
+    // Skip delivery-mirror model (outbound copies, zero tokens)
+    if (msg.model === 'delivery-mirror') return null;
+
+    const content = msg.content;
+    if (!Array.isArray(content) && typeof content !== 'string') return null;
+
+    const contentArray = Array.isArray(content) ? content : [{ type: 'text', text: content }];
+
+    // ─── Tool result ───
+    if (role === 'toolResult') {
+      const details = msg.details;
+      const resultText = contentArray.find((c: any) => c.type === 'text')?.text;
+      return [{
+        type: 'tool_result',
+        timestamp: ts,
+        sessionId: sid,
+        toolName: msg.toolName,
+        toolCallId: msg.toolCallId,
+        toolStatus: details?.status === 'error' || details?.exitCode ? (details.exitCode === 0 ? 'completed' : 'error') : (details?.status || 'completed'),
+        toolDuration: details?.durationMs,
+        toolError: details?.status === 'error' ? resultText?.slice(0, 200) : undefined,
+      }];
     }
 
     if (role !== 'user' && role !== 'assistant') return null;
 
-    const content = msg?.content;
-    const text = Array.isArray(content)
-      ? content.find((c: any) => c.type === 'text')?.text
-      : (typeof content === 'string' ? content : undefined);
+    const events: FeedEvent[] = [];
 
-    if (!text) return null;
+    // Usage & cost from assistant messages
+    const usage = msg.usage;
+    let usageData: { inputTokens: number; outputTokens: number } | undefined;
+    let cost: number | undefined;
+    if (usage) {
+      if (format === 'openclaw') {
+        usageData = { inputTokens: usage.input || 0, outputTokens: usage.output || 0 };
+        cost = usage.cost?.total;
+      } else {
+        usageData = { inputTokens: usage.input_tokens || 0, outputTokens: usage.output_tokens || 0 };
+      }
+      // Calculate cost from tokens if not provided
+      if (cost === undefined && msg.model) {
+        const pricing = getPricing(msg.model);
+        cost =
+          tokenCost(usageData!.inputTokens, pricing.input) +
+          tokenCost(usageData!.outputTokens, pricing.output) +
+          tokenCost(usage.cache_read_input_tokens || usage.cacheRead || 0, pricing.cacheRead) +
+          tokenCost(usage.cache_creation_input_tokens || usage.cacheWrite || 0, pricing.cacheWrite);
+      }
+    }
 
-    const usage = msg?.usage;
-    const usageData = format === 'openclaw'
-      ? (usage ? { inputTokens: usage.input || 0, outputTokens: usage.output || 0 } : undefined)
-      : (usage ? { inputTokens: usage.input_tokens || 0, outputTokens: usage.output_tokens || 0 } : undefined);
+    // Check for thinking block
+    const hasThinking = contentArray.some((c: any) => c.type === 'thinking');
 
-    return {
-      type: role,
-      timestamp: ts,
-      text: text.slice(0, 500),
-      model: msg?.model,
-      sessionId: sessionId.slice(0, 8),
-      usage: usageData,
-    };
+    // ─── Extract text content ───
+    const textBlock = contentArray.find((c: any) => c.type === 'text');
+    if (textBlock?.text) {
+      if (role === 'user') {
+        const channelInfo = classifyChannel(textBlock.text);
+        const cleanedText = stripChannelMetadata(textBlock.text);
+        // Filter out NO_REPLY system signals
+        if (cleanedText && cleanedText.trim() !== 'NO_REPLY') {
+          events.push({
+            type: 'user',
+            timestamp: ts,
+            sessionId: sid,
+            text: cleanedText.slice(0, 500),
+            channel: channelInfo.channel,
+            channelName: channelInfo.channelName,
+            sender: channelInfo.sender || 'Adam',
+          });
+        }
+      } else {
+        events.push({
+          type: 'assistant',
+          timestamp: ts,
+          sessionId: sid,
+          text: textBlock.text.slice(0, 500),
+          model: msg.model,
+          usage: usageData,
+          cost: cost !== undefined ? Math.round(cost * 10000) / 10000 : undefined,
+          hasThinking,
+          stopReason: msg.stopReason,
+        });
+      }
+    }
+
+    // ─── Extract tool calls from assistant messages ───
+    if (role === 'assistant') {
+      for (const block of contentArray) {
+        if (block.type === 'toolCall') {
+          events.push({
+            type: 'tool_call',
+            timestamp: ts,
+            sessionId: sid,
+            toolName: block.name,
+            toolCallId: block.id,
+            toolArgs: summarizeToolArgs(block.name, block.arguments),
+          });
+        }
+      }
+
+      // If assistant had no text but had tool calls, attach usage/cost/thinking to first tool_call
+      if (!textBlock?.text && events.length > 0 && events[0].type === 'tool_call') {
+        events[0].usage = usageData;
+        events[0].cost = cost !== undefined ? Math.round(cost * 10000) / 10000 : undefined;
+        events[0].hasThinking = hasThinking;
+        events[0].model = msg.model;
+      }
+    }
+
+    return events.length > 0 ? events : null;
   } catch { return null; }
 }
 
@@ -823,14 +1048,21 @@ async function backfillFinnFeed(res: Response) {
     );
     withStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
-    const recentEvents: Array<{ timestamp: string; [k: string]: any }> = [];
+    const recentEvents: Array<FeedEvent> = [];
     // Take last 10 lines from 3 most recent session files
     for (const { f, fPath } of withStats.slice(0, 3)) {
       const content = await fs.readFile(fPath, 'utf-8');
       const lines = content.trim().split('\n');
       for (const line of lines.slice(-10)) {
-        const evt = parseFeedEvent(line, f.replace('.jsonl', ''), 'openclaw');
-        if (evt) recentEvents.push(evt);
+        const events = parseFeedEvent(line, f.replace('.jsonl', ''), 'openclaw');
+        if (events) {
+          // During backfill, filter out tool events to keep feed focused on conversation
+          for (const evt of events) {
+            if (evt.type !== 'tool_call' && evt.type !== 'tool_result') {
+              recentEvents.push(evt);
+            }
+          }
+        }
       }
     }
 
@@ -856,10 +1088,17 @@ Write-Output '---END---'
     if (!raw) return '';
 
     const lines = raw.split('\n').filter(l => l.trim() && l.trim() !== '---END---');
-    const events: Array<{ timestamp: string; [k: string]: any }> = [];
+    const events: Array<FeedEvent> = [];
     for (const line of lines) {
-      const evt = parseFeedEvent(line, 'kira', 'openclaw');
-      if (evt) events.push(evt);
+      const parsed = parseFeedEvent(line, 'kira', 'openclaw');
+      if (parsed) {
+        // During backfill, filter out tool events to keep feed focused on conversation
+        for (const evt of parsed) {
+          if (evt.type !== 'tool_call' && evt.type !== 'tool_result') {
+            events.push(evt);
+          }
+        }
+      }
     }
     events.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
     const toSend = events.slice(-20);
@@ -914,10 +1153,13 @@ if ($latest) { Get-Content $latest.FullName | Select-Object -Last 20 }
 
         const lines = raw.split('\n').filter(Boolean);
         for (const line of lines) {
-          const evt = parseFeedEvent(line, 'kira', 'openclaw');
-          if (!evt || !evt.timestamp || evt.timestamp <= lastSeenTimestamp) continue;
-          lastSeenTimestamp = evt.timestamp;
-          broadcastSSE('message', evt, 'kira');
+          const parsed = parseFeedEvent(line, 'kira', 'openclaw');
+          if (!parsed) continue;
+          for (const evt of parsed) {
+            if (!evt.timestamp || evt.timestamp <= lastSeenTimestamp) continue;
+            lastSeenTimestamp = evt.timestamp;
+            broadcastSSE('message', evt, 'kira');
+          }
         }
       } catch { /* SSH error, skip */ }
     };

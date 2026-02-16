@@ -2,12 +2,14 @@ import express from 'express';
 import cors from 'cors';
 import fs from 'fs/promises';
 import path from 'path';
-import { execFile } from 'child_process';
+import os from 'os';
+import { execFile, exec } from 'child_process';
 import { promisify } from 'util';
 import { createHash } from 'crypto';
 import monitoringRouter from './monitoring.js';
 
 const execFileAsync = promisify(execFile);
+const execAsync = promisify(exec);
 
 const app = express();
 const PORT = process.env.API_PORT || 3001;
@@ -278,15 +280,19 @@ function parseTasksFile(content: string) {
     // Parse task lines
     const taskMatch = line.match(/^-\s*\[([ x~])\]\s*\*?\*?(.+?)(?:\*?\*?\s*(?:—.*)?)?$/);
     if (taskMatch) {
-      const [, status, title] = taskMatch;
+      const [, status, rawTitle] = taskMatch;
+      const projectMatch = rawTitle.match(/#([\w-]+)\s*$/);
+      const project = projectMatch ? projectMatch[1] : undefined;
+      const titleWithoutTag = rawTitle.replace(/#[\w-]+\s*$/, '').trim();
       idx++;
       tasks.push({
         id: `task-${idx}`,
         agentId: 'finn',
-        title: title.replace(/\*\*/g, '').trim(),
+        title: titleWithoutTag.replace(/\*\*/g, '').trim(),
         completed: status === 'x',
         priority: currentPriority,
         category: currentSection,
+        project,
         createdAt: new Date(),
       });
     }
@@ -316,6 +322,7 @@ interface ASTNode {
   // subheading priority tracking
   subPriority?: 'high' | 'medium' | 'low';
   subCategory?: string;
+  project?: string;
 }
 
 function makeTaskId(agentId: string, title: string): string {
@@ -386,7 +393,12 @@ function parseTaskFileAST(content: string, agentId: string): ASTNode[] {
     const taskMatch = line.match(/^-\s*\[([ x~])\]\s*(.+)$/);
     if (taskMatch && currentColumn) {
       const [, status, rawTitle] = taskMatch;
-      const cleanTitle = rawTitle.replace(/\*\*/g, '').replace(/\s*—.*$/, '').trim();
+      // Extract #project tag
+      const projectMatch = rawTitle.match(/#([\w-]+)\s*$/);
+      const project = projectMatch ? projectMatch[1] : undefined;
+      // Strip tag from title for display and ID generation
+      const titleWithoutTag = rawTitle.replace(/#[\w-]+\s*$/, '').trim();
+      const cleanTitle = titleWithoutTag.replace(/\*\*/g, '').replace(/\s*—.*$/, '').trim();
       const taskId = makeTaskId(agentId, cleanTitle);
       nodes.push({
         type: 'task',
@@ -397,6 +409,7 @@ function parseTaskFileAST(content: string, agentId: string): ASTNode[] {
         priority: currentPriority,
         category: currentCategory,
         column: currentColumn,
+        project,
       });
       continue;
     }
@@ -417,7 +430,7 @@ function serializeAST(nodes: ASTNode[]): string {
 function astToKanbanColumns(nodes: ASTNode[], agentId: string) {
   const columns: Record<KanbanColumnId, Array<{
     id: string; agentId: string; title: string; status: string;
-    priority: string; category: string; column: KanbanColumnId;
+    priority: string; category: string; column: KanbanColumnId; project?: string;
   }>> = {
     'inbox': [],
     'in-progress': [],
@@ -440,6 +453,7 @@ function astToKanbanColumns(nodes: ASTNode[], agentId: string) {
         priority: node.priority || 'medium',
         category: node.category || '',
         column: node.column,
+        project: node.project,
       });
     }
   }
@@ -648,8 +662,8 @@ app.patch('/api/tasks/:taskId/status', async (req, res) => {
 // POST /api/tasks — create a new task
 app.post('/api/tasks', async (req, res) => {
   try {
-    const { agentId = 'finn', title, column = 'inbox', priority } = req.body as {
-      agentId: string; title: string; column?: KanbanColumnId; priority?: string;
+    const { agentId = 'finn', title, column = 'inbox', priority, project } = req.body as {
+      agentId: string; title: string; column?: KanbanColumnId; priority?: string; project?: string;
     };
 
     if (!title) {
@@ -660,7 +674,8 @@ app.post('/api/tasks', async (req, res) => {
       const content = await readTasksFile(agentId);
       const ast = parseTaskFileAST(content, agentId);
 
-      const newLine = `- [ ] **${title}**`;
+      const tagSuffix = project ? ` #${project}` : '';
+      const newLine = `- [ ] **${title}**${tagSuffix}`;
       const newNode: ASTNode = {
         type: 'task',
         raw: newLine,
@@ -669,6 +684,7 @@ app.post('/api/tasks', async (req, res) => {
         taskId: makeTaskId(agentId, title),
         priority: (priority as 'high' | 'medium' | 'low') || 'medium',
         column: column,
+        project,
       };
 
       // Find the target section and insert after header/comments
@@ -744,7 +760,8 @@ function parseCheckpoint(content: string) {
 
 // ─── Crons (from crons.json gateway + launchd plists) ───
 
-const CRONS_JSON_PATH = path.join(AGENTS_BASE_PATH, 'crons.json');
+const FINN_LIVE_CRONS_PATH = path.join(os.homedir(), '.openclaw', 'cron', 'jobs.json');
+const FINN_WORKSPACE_CRONS_PATH = path.join(AGENTS_BASE_PATH, 'crons.json');
 const LAUNCHD_PATH = path.join(SCRIPTS_PATH, 'launchd');
 
 interface CronEntry {
@@ -758,7 +775,7 @@ interface CronEntry {
     text?: string;
   };
   delivery?: { mode: string; channel: string; to: string; bestEffort?: boolean };
-  state?: { lastRunAtMs?: number; lastStatus?: string; lastDurationMs?: number };
+  state?: { lastRunAtMs?: number; lastStatus?: string; lastDurationMs?: number; runCount?: number; lastError?: string };
 }
 
 /** Read crons.json which has shape { version, jobs: CronEntry[] } */
@@ -823,28 +840,41 @@ app.get('/api/agents/:agentId/crons', async (req, res) => {
       schedule: { cron: string; timezone: string; humanReadable: string };
       status: string; taskGroup: string; source: string;
       delivery?: { channel: string; to: string };
+      lastRunAt?: string; lastDurationMs?: number; runCount?: number; lastError?: string;
     }> = [];
 
     if (agentId === 'finn') {
-      // Parse crons.json
-      const rawCrons = await readJsonFile(CRONS_JSON_PATH);
+      // Try live gateway state first, fall back to workspace crons.json
+      let rawCrons = await readJsonFile(FINN_LIVE_CRONS_PATH);
+      let cronSource = 'openclaw-gateway';
+      if (!rawCrons) {
+        rawCrons = await readJsonFile(FINN_WORKSPACE_CRONS_PATH);
+        cronSource = 'crons.json';
+      }
       const cronJobs = readCronJobs(rawCrons);
       for (const entry of cronJobs) {
-        const group = entry.payload.kind === 'systemEvent' ? 'System' :
+        const group = entry.payload?.kind === 'systemEvent' ? 'System' :
                       entry.delivery?.channel === 'telegram' ? 'Notifications' : 'Automation';
         crons.push({
-          id: entry.name,
+          id: entry.id || entry.name,
           agentId: 'finn',
           name: prettyCategoryName(entry.name),
-          description: (() => { const msg = entry.payload.message || entry.payload.text || ''; return msg.slice(0, 200) + (msg.length > 200 ? '...' : ''); })(),
+          description: (() => { const msg = entry.payload?.message || entry.payload?.text || ''; return msg.slice(0, 200) + (msg.length > 200 ? '...' : ''); })(),
           schedule: cronEntrySchedule(entry),
-          status: entry.enabled ? (entry.state?.lastStatus === 'error' ? 'error' : 'active') : 'paused',
+          status: !entry.enabled ? 'paused' :
+                  entry.state?.lastStatus === 'error' ? 'error' :
+                  entry.state?.lastStatus === 'ok' ? 'active' :
+                  entry.state?.lastStatus === 'skipped' ? 'warning' : 'active',
           taskGroup: group,
-          source: 'crons.json',
+          source: cronSource,
           delivery: entry.delivery ? {
             channel: entry.delivery.channel,
             to: entry.delivery.to,
           } : undefined,
+          lastRunAt: entry.state?.lastRunAtMs ? new Date(entry.state.lastRunAtMs).toISOString() : undefined,
+          lastDurationMs: entry.state?.lastDurationMs,
+          runCount: entry.state?.runCount,
+          lastError: entry.state?.lastError,
         });
       }
 
@@ -884,46 +914,56 @@ app.get('/api/agents/:agentId/crons', async (req, res) => {
     }
 
     if (agentId === 'kira') {
-      // Read Kira's cron data from SSH or fallback to known list
-      const cronReport = await sshReadFile('memory/cron-report.md').catch(() => null);
-      const performanceData = await sshReadFile('memory/kira-performance.md').catch(() => null);
+      // Read live cron state from Kira's gateway via SSH
+      try {
+        const { stdout } = await execAsync(
+          'ssh adami@100.117.33.89 "type C:\\Users\\adami\\.openclaw\\cron\\jobs.json"',
+          { timeout: 15000 }
+        );
 
-      // Parse cron list from kira-development.md or cron-report
-      const knownKiraCrons = [
-        { name: 'discord-monitor', schedule: '*/5 * * * *', group: 'Core Monitoring', desc: 'Watch for Discord messages' },
-        { name: 'sys-health', schedule: '0 * * * *', group: 'Core Monitoring', desc: 'Gateway/system health check' },
-        { name: 'afternoon-check', schedule: '0 15 * * *', group: 'Core Monitoring', desc: 'Deadline warnings' },
-        { name: 'evening-summary', schedule: '0 21 * * *', group: 'Core Monitoring', desc: 'Day recap' },
-        { name: 'morning-check', schedule: '0 8 * * *', group: 'Core Monitoring', desc: 'Morning systems check' },
-        { name: 'midnight-sweep', schedule: '0 0 * * *', group: 'Core Monitoring', desc: 'Midnight maintenance sweep' },
-        { name: 'finn-qa-check', schedule: '*/30 * * * *', group: 'QA & Supervision', desc: 'QA review of Finn outputs' },
-        { name: 'finn-check', schedule: '0 */2 * * *', group: 'QA & Supervision', desc: 'Finn status check' },
-        { name: 'finn-context-backup', schedule: '0 */2 * * *', group: 'QA & Supervision', desc: 'Checkpoint freshness check' },
-        { name: 'finn-mood-check', schedule: '0 12,18 * * *', group: 'QA & Supervision', desc: 'Finn mood assessment' },
-        { name: 'workload-check', schedule: '0 10,14,17 * * *', group: 'QA & Supervision', desc: 'Workload analysis' },
-        { name: 'cron-audit', schedule: '0 3 * * *', group: 'QA & Supervision', desc: 'Audit cron job inventory' },
-        { name: 'learn-from-finn', schedule: '0 13 * * *', group: 'Learning', desc: 'Extract learnings from Finn' },
-        { name: 'daily-reflection', schedule: '0 23 * * *', group: 'Learning', desc: 'Daily meta-reflection' },
-        { name: 'dream-cycle', schedule: '0 4 * * *', group: 'Learning', desc: 'Creative dream processing' },
-        { name: 'sync-check', schedule: '0 6,14,22 * * *', group: 'Maintenance', desc: 'Cross-agent sync status' },
-        { name: 'p0-monitor', schedule: '*/15 * * * *', group: 'Maintenance', desc: 'P0 alert monitoring' },
-        { name: 'memory-cleanup', schedule: '0 5 * * *', group: 'Maintenance', desc: 'Memory file cleanup' },
-      ];
+        // Parse the SSH output (Windows 'type' command outputs the file content)
+        const kiraData = JSON.parse(stdout.trim());
+        const kiraJobs = Array.isArray(kiraData) ? kiraData : (kiraData.jobs || []);
 
-      for (const kc of knownKiraCrons) {
+        for (const entry of kiraJobs) {
+          const sched = cronEntrySchedule(entry);
+          crons.push({
+            id: entry.id || `kira-${entry.name}`,
+            agentId: 'kira',
+            name: prettyCategoryName(entry.name),
+            description: (() => {
+              const msg = entry.payload?.message || entry.payload?.text || '';
+              return msg.slice(0, 200) + (msg.length > 200 ? '...' : '');
+            })(),
+            schedule: sched,
+            status: !entry.enabled ? 'paused' :
+                    entry.state?.lastStatus === 'error' ? 'error' :
+                    entry.state?.lastStatus === 'ok' ? 'active' :
+                    entry.state?.lastStatus === 'skipped' ? 'warning' : 'active',
+            taskGroup: entry.delivery?.channel === 'discord' ? 'Discord' : 'System',
+            source: 'openclaw-gateway',
+            delivery: entry.delivery ? {
+              channel: entry.delivery.channel,
+              to: entry.delivery.to,
+            } : undefined,
+            lastRunAt: entry.state?.lastRunAtMs ? new Date(entry.state.lastRunAtMs).toISOString() : undefined,
+            lastDurationMs: entry.state?.lastDurationMs,
+            runCount: entry.state?.runCount,
+            lastError: entry.state?.lastError,
+          });
+        }
+      } catch (sshError) {
+        console.error('Failed to read Kira crons via SSH, using fallback:', sshError);
+        // Fallback: return empty list with error note
         crons.push({
-          id: `kira-${kc.name}`,
+          id: 'kira-error',
           agentId: 'kira',
-          name: prettyCategoryName(kc.name),
-          description: kc.desc,
-          schedule: {
-            cron: kc.schedule,
-            timezone: 'America/New_York',
-            humanReadable: cronExprToHumanReadable(kc.schedule),
-          },
-          status: 'active',
-          taskGroup: kc.group,
-          source: 'known-list',
+          name: 'Error Reading Kira Crons',
+          description: 'Could not connect to Kira via SSH. Check Tailscale connection.',
+          schedule: { cron: '-', timezone: '-', humanReadable: 'N/A' },
+          status: 'error',
+          taskGroup: 'System',
+          source: 'error',
         });
       }
     }
@@ -935,68 +975,66 @@ app.get('/api/agents/:agentId/crons', async (req, res) => {
   }
 });
 
-// POST /api/crons/:cronId/run -- attempt to run a cron's underlying script
+// POST /api/crons/:cronId/run -- trigger cron via OpenClaw gateway
 app.post('/api/crons/:cronId/run', async (req, res) => {
   try {
     const { cronId } = req.params;
+    const { agentId } = req.body; // Optional: 'finn' or 'kira'
 
-    // Map common cron names to their script files
-    const cronScriptMap: Record<string, string> = {
-      'morning-briefing': 'scripts/morning-briefing.sh',
-      'oura-sync': 'scripts/oura-sync.js',
-      'token-status-update': 'scripts/token-status-check.sh',
-      'expense-sync': 'scripts/expense-sync.sh',
-      'evening-digest': 'scripts/evening-digest.sh',
-      'bill-tracker': 'scripts/bill-tracker.sh',
-      'calendar-sync': 'scripts/calendar-sync.sh',
-      'email-check': 'scripts/email-check.sh',
-      'backup-checkpoint': 'scripts/backup-checkpoint.sh',
-    };
+    // Determine which agent this cron belongs to
+    const isKiraCron = agentId === 'kira' || cronId.startsWith('kira-');
 
-    const scriptRelPath = cronScriptMap[cronId];
-    if (!scriptRelPath) {
-      return res.json({
-        success: false,
+    if (isKiraCron) {
+      // Trigger Kira cron via SSH
+      const cronUuid = cronId.replace('kira-', '');
+      const { stdout, stderr } = await execAsync(
+        `ssh adami@100.117.33.89 "openclaw cron run ${cronUuid}"`,
+        { timeout: 30000 }
+      );
+
+      res.json({
+        success: true,
         cronId,
-        error: `Cron "${cronId}" is gateway-managed and cannot be triggered directly from the dashboard. Use the gateway or agent channel to trigger it.`,
+        method: 'openclaw-gateway-ssh',
+        output: stdout.substring(0, 5000),
+        stderr: stderr ? stderr.substring(0, 2000) : undefined,
+        executedAt: new Date().toISOString(),
+      });
+    } else {
+      // Trigger Finn cron via local OpenClaw gateway
+      // First, find the UUID for this cron name from jobs.json
+      let cronUuid = cronId;
+
+      try {
+        const jobsData = await readJsonFile(FINN_LIVE_CRONS_PATH);
+        const jobs = readCronJobs(jobsData);
+        const match = jobs.find((j: any) => j.name === cronId || j.id === cronId);
+        if (match) {
+          cronUuid = match.id;
+        }
+      } catch { /* use cronId as-is, might already be a UUID */ }
+
+      const { stdout, stderr } = await execAsync(
+        `export PATH="/Users/lume/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && openclaw cron run ${cronUuid}`,
+        { timeout: 120000 }
+      );
+
+      res.json({
+        success: true,
+        cronId,
+        method: 'openclaw-gateway',
+        output: stdout.substring(0, 5000),
+        stderr: stderr ? stderr.substring(0, 2000) : undefined,
         executedAt: new Date().toISOString(),
       });
     }
-
-    const scriptFullPath = path.join(AGENTS_BASE_PATH, scriptRelPath);
-    try {
-      await fs.access(scriptFullPath);
-    } catch {
-      return res.json({
-        success: false,
-        cronId,
-        error: `Script not found: ${scriptRelPath}`,
-        executedAt: new Date().toISOString(),
-      });
-    }
-
-    const ext = path.extname(scriptFullPath);
-    const command = ext === '.js' ? 'node' : ext === '.py' ? 'python3' : 'bash';
-
-    const { stdout, stderr } = await execFileAsync(command, [scriptFullPath], {
-      timeout: 60000,
-      cwd: AGENTS_BASE_PATH,
-      env: { ...process.env, HOME: process.env.HOME || '/Users/lume' },
-    });
-
-    res.json({
-      success: true,
-      cronId,
-      output: stdout.substring(0, 5000),
-      stderr: stderr ? stderr.substring(0, 2000) : undefined,
-      executedAt: new Date().toISOString(),
-    });
   } catch (error: any) {
     console.error('Cron run error:', error);
     res.json({
       success: false,
       cronId: req.params.cronId,
-      error: error.message || 'Script execution failed',
+      error: error.message || 'Cron execution failed',
+      method: 'openclaw-gateway',
       executedAt: new Date().toISOString(),
     });
   }
@@ -1364,7 +1402,7 @@ app.get('/api/system-info', async (req, res) => {
       fs.readdir(SCRIPTS_PATH).catch(() => []),
       fs.readdir(SKILLS_PATH, { withFileTypes: true }).catch(() => []),
       getAllMemoryFilesRecursive({ excludeArchive: true }).catch(() => []),
-      readJsonFile(CRONS_JSON_PATH),
+      readJsonFile(FINN_WORKSPACE_CRONS_PATH),
       readJsonFile(path.join(MEMORY_PATH, 'cron-health-alerts.json')),
       readMdFile(path.join(MEMORY_PATH, 'token-status.md')),
       readMdFile(path.join(MEMORY_PATH, 'checkpoint.md')),
@@ -1616,14 +1654,14 @@ app.get('/api/dashboard', async (req, res) => {
       readMdFile(path.join(MEMORY_PATH, 'meal-plan-current.md')),
       readMdFile(path.join(MEMORY_PATH, 'friction-points.md')),
       // Crons, goals, missions, quick actions
-      readJsonFile(CRONS_JSON_PATH),
+      readJsonFile(FINN_WORKSPACE_CRONS_PATH),
       readMdFile(path.join(MEMORY_PATH, 'goals.md')),
       readMdFile(path.join(MEMORY_PATH, 'missions.md')),
       readJsonFile(path.join(MEMORY_PATH, 'quick-actions.json')),
     ]);
 
     // Destructure newly added items
-    const cronsData = (await readJsonFile(CRONS_JSON_PATH)) as CronEntry[] | null;
+    const cronsData = (await readJsonFile(FINN_LIVE_CRONS_PATH) || await readJsonFile(FINN_WORKSPACE_CRONS_PATH)) as CronEntry[] | null;
     const goalsContent = await readMdFile(path.join(MEMORY_PATH, 'goals.md'));
     const missionsContent = await readMdFile(path.join(MEMORY_PATH, 'missions.md'));
     const quickActionsData = await readJsonFile(path.join(MEMORY_PATH, 'quick-actions.json'));
@@ -2373,7 +2411,7 @@ app.get('/api/agents/:agentId/stats', async (req, res) => {
     const [allFiles, skillEntries, rawCrons] = await Promise.all([
       getAllMemoryFilesRecursive({ excludeArchive: true }),
       fs.readdir(SKILLS_PATH, { withFileTypes: true }).catch(() => []),
-      readJsonFile(CRONS_JSON_PATH),
+      readJsonFile(FINN_WORKSPACE_CRONS_PATH),
     ]);
 
     const skillCount = (skillEntries as any[]).filter((e: any) => e.isDirectory?.()).length;

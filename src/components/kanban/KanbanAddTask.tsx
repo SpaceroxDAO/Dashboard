@@ -5,20 +5,22 @@ import type { KanbanColumnId } from '@/types';
 
 interface KanbanAddTaskProps {
   column: KanbanColumnId;
-  onAdd: (title: string, column: KanbanColumnId, priority?: 'high' | 'medium' | 'low') => void;
+  onAdd: (title: string, column: KanbanColumnId, priority?: 'high' | 'medium' | 'low', project?: string) => void;
 }
 
 export function KanbanAddTask({ column, onAdd }: KanbanAddTaskProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [title, setTitle] = useState('');
   const [priority, setPriority] = useState<'high' | 'medium' | 'low'>('medium');
+  const [project, setProject] = useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
-    onAdd(title.trim(), column, priority);
+    onAdd(title.trim(), column, priority, project.trim() || undefined);
     setTitle('');
     setPriority('medium');
+    setProject('');
     setIsOpen(false);
   };
 
@@ -26,6 +28,7 @@ export function KanbanAddTask({ column, onAdd }: KanbanAddTaskProps) {
     if (e.key === 'Escape') {
       setIsOpen(false);
       setTitle('');
+      setProject('');
     }
   };
 
@@ -62,7 +65,7 @@ export function KanbanAddTask({ column, onAdd }: KanbanAddTaskProps) {
               autoFocus
               className="w-full bg-transparent text-sm text-text-bright placeholder-text-dim outline-none"
             />
-            <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
               <select
                 value={priority}
                 onChange={(e) => setPriority(e.target.value as 'high' | 'medium' | 'low')}
@@ -72,10 +75,17 @@ export function KanbanAddTask({ column, onAdd }: KanbanAddTaskProps) {
                 <option value="medium">Medium</option>
                 <option value="low">Low</option>
               </select>
-              <div className="flex items-center gap-1">
+              <input
+                type="text"
+                value={project}
+                onChange={(e) => setProject(e.target.value.replace(/\s+/g, '-').toLowerCase())}
+                placeholder="#project"
+                className="text-xs bg-surface-elevated text-text-muted border border-[var(--color-border-panel)] rounded px-1.5 py-0.5 w-24 outline-none"
+              />
+              <div className="flex items-center gap-1 ml-auto">
                 <button
                   type="button"
-                  onClick={() => { setIsOpen(false); setTitle(''); }}
+                  onClick={() => { setIsOpen(false); setTitle(''); setProject(''); }}
                   className="p-1 text-text-dim hover:text-text-muted rounded transition-colors"
                 >
                   <X className="w-3.5 h-3.5" />

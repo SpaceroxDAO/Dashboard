@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
 import { useAtom } from 'jotai';
-import { Sidebar, Header, MobileNav, PageTransition } from '@/components/layout';
+import { Sidebar, Header, PageTransition } from '@/components/layout';
 import { ToastContainer, KeyboardShortcutsModal, KeyboardHint, ScrollToTop, CommandPalette } from '@/components/ui';
 import { useKeyboardShortcuts, useDataLoader } from '@/hooks';
 import {
@@ -107,8 +107,6 @@ function AppContent() {
         </AnimatePresence>
       </main>
 
-      {/* Mobile Bottom Navigation */}
-      <MobileNav />
 
       {/* Toast Notifications */}
       <ToastContainer />

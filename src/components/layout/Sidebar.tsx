@@ -17,6 +17,7 @@ import {
   Wifi,
   WifiOff,
   Loader2,
+  Gauge,
 } from 'lucide-react';
 import { sidebarCollapsedAtom, activeAgentAtom, agentsAtom, activeAgentIdAtom, connectionStatusAtom, activeMissionsAtom } from '@/store/atoms';
 import { X } from 'lucide-react';
@@ -136,6 +137,17 @@ export function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
       {/* Bottom section */}
       <div className="border-t border-[var(--color-border-panel)] p-2">
         <ul className="space-y-1">
+          <li>
+            <a
+              href="https://claude.ai/settings/usage"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-muted hover:bg-surface-hover hover:text-text-bright"
+            >
+              <Gauge className="w-5 h-5 flex-shrink-0" />
+              <span className="font-medium">Usage</span>
+            </a>
+          </li>
           {bottomItems.map((item) => {
             const isActive = location.pathname === item.path;
             return (
@@ -309,6 +321,18 @@ export function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
         {/* Bottom section */}
         <div className="border-t border-[var(--color-border-panel)] p-2">
           <ul className="space-y-1">
+            <li>
+              <a
+                href="https://claude.ai/settings/usage"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-muted hover:bg-surface-hover hover:text-text-bright"
+                title={collapsed ? 'Usage' : undefined}
+              >
+                <Gauge className="w-5 h-5 flex-shrink-0" />
+                {!collapsed && <span className="font-medium">Usage</span>}
+              </a>
+            </li>
             {bottomItems.map((item) => {
               const isActive = location.pathname === item.path;
               return (

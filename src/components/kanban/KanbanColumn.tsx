@@ -18,7 +18,7 @@ interface KanbanColumnProps {
   id: KanbanColumnId;
   tasks: KanbanTask[];
   onToggle: (taskId: string, newStatus: TaskStatus) => void;
-  onAddTask: (title: string, column: KanbanColumnId, priority?: 'high' | 'medium' | 'low') => void;
+  onAddTask: (title: string, column: KanbanColumnId, priority?: 'high' | 'medium' | 'low', project?: string) => void;
   maxVisible?: number;
 }
 

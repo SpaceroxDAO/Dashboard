@@ -408,11 +408,12 @@ export async function createTask(
   title: string,
   column: KanbanColumnId,
   priority?: 'high' | 'medium' | 'low',
+  project?: string,
 ): Promise<{ success: boolean; fileHash: string }> {
   const response = await fetch(`${API_BASE}/api/tasks`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agentId, title, column, priority }),
+    body: JSON.stringify({ agentId, title, column, priority, project }),
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));

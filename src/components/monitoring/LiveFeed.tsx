@@ -1,22 +1,133 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAtom } from 'jotai';
-import { Radio, User, Bot, Pause, Play } from 'lucide-react';
+import {
+  Radio, User, Bot, Pause, Play, Wrench, Check, X,
+  Brain, ArrowDownUp, Minimize2,
+} from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Card, Badge, Button } from '@/components/ui';
 import { getSSEUrl } from '@/services/api';
 import { activeAgentIdAtom } from '@/store/atoms';
 
+// ─── Types ───
+
+type FeedEventType = 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'compaction' | 'model_change';
+type ChannelType = 'discord' | 'telegram' | 'cron' | 'system' | 'chat';
+
 interface FeedMessage {
   id: string;
-  type: 'user' | 'assistant';
+  type: FeedEventType;
   timestamp: string;
+  sessionId?: string;
   text?: string;
   model?: string;
-  sessionId?: string;
   usage?: { inputTokens: number; outputTokens: number };
+  cost?: number;
+  stopReason?: string;
+  hasThinking?: boolean;
+  channel?: ChannelType;
+  channelName?: string;
+  sender?: string;
+  toolName?: string;
+  toolArgs?: string;
+  toolStatus?: 'completed' | 'error';
+  toolDuration?: number;
+  toolError?: string;
+  tokensBefore?: number;
+  provider?: string;
+  modelId?: string;
 }
 
-const MAX_MESSAGES = 50;
+const MAX_MESSAGES = 100;
+
+// ─── Sub-components ───
+
+function CostTag({ cost }: { cost?: number }) {
+  if (!cost || cost < 0.001) return null;
+  return (
+    <span className="text-[10px] text-amber-400/80 flex-shrink-0 font-medium">
+      ${cost < 0.01 ? cost.toFixed(3) : cost.toFixed(2)}
+    </span>
+  );
+}
+
+function FeedRow({ msg, formatTime }: { msg: FeedMessage; formatTime: (ts: string) => string }) {
+  switch (msg.type) {
+    case 'user':
+      return (
+        <div className="flex items-start gap-2 py-0.5 px-1 rounded hover:bg-surface-hover/50">
+          <span className="text-text-dim flex-shrink-0 w-16">{formatTime(msg.timestamp)}</span>
+          <User className="w-3 h-3 text-signal-secondary flex-shrink-0 mt-0.5" />
+          {msg.sender && <span className="text-signal-secondary font-medium flex-shrink-0">{msg.sender}:</span>}
+          <span className="text-text-bright flex-1 min-w-0 truncate">{msg.text || `[${msg.type}]`}</span>
+        </div>
+      );
+
+    case 'assistant':
+      return (
+        <div className="flex items-start gap-2 py-0.5 px-1 rounded hover:bg-surface-hover/50">
+          <span className="text-text-dim flex-shrink-0 w-16">{formatTime(msg.timestamp)}</span>
+          <Bot className="w-3 h-3 text-signal-primary flex-shrink-0 mt-0.5" />
+          {msg.hasThinking && <Brain className="w-3 h-3 text-violet-400 flex-shrink-0 mt-0.5" />}
+          <span className="text-text-bright flex-1 min-w-0 truncate">{msg.text || (msg.usage ? `[${msg.usage.outputTokens} tokens]` : `[${msg.type}]`)}</span>
+          <CostTag cost={msg.cost} />
+        </div>
+      );
+
+    case 'tool_call':
+      return (
+        <div className="flex items-start gap-2 py-0.5 px-1 rounded hover:bg-surface-hover/50 opacity-60">
+          <span className="text-text-dim flex-shrink-0 w-16">{formatTime(msg.timestamp)}</span>
+          <Wrench className="w-3 h-3 text-orange-400 flex-shrink-0 mt-0.5" />
+          <span className="text-orange-300 font-medium flex-shrink-0">{msg.toolName}</span>
+          {msg.toolArgs && <span className="text-text-dim flex-1 min-w-0 truncate">{msg.toolArgs}</span>}
+        </div>
+      );
+
+    case 'tool_result':
+      return (
+        <div className="flex items-start gap-2 py-0.5 px-1 rounded hover:bg-surface-hover/50 opacity-60">
+          <span className="text-text-dim flex-shrink-0 w-16">{formatTime(msg.timestamp)}</span>
+          {msg.toolStatus === 'error'
+            ? <X className="w-3 h-3 text-red-400 flex-shrink-0 mt-0.5" />
+            : <Check className="w-3 h-3 text-green-400 flex-shrink-0 mt-0.5" />
+          }
+          <span className={`font-medium flex-shrink-0 ${msg.toolStatus === 'error' ? 'text-red-300' : 'text-green-300'}`}>
+            {msg.toolName}
+          </span>
+          {msg.toolDuration !== undefined && (
+            <span className="text-text-dim flex-shrink-0">{msg.toolDuration}ms</span>
+          )}
+          {msg.toolError && <span className="text-red-400 flex-1 min-w-0 truncate">{msg.toolError}</span>}
+        </div>
+      );
+
+    case 'compaction':
+      return (
+        <div className="flex items-start gap-2 py-0.5 px-1 rounded hover:bg-surface-hover/50 opacity-75">
+          <span className="text-text-dim flex-shrink-0 w-16">{formatTime(msg.timestamp)}</span>
+          <Minimize2 className="w-3 h-3 text-cyan-400 flex-shrink-0 mt-0.5" />
+          <span className="text-cyan-300 italic">
+            Context compacted{msg.tokensBefore ? `: ${(msg.tokensBefore / 1000).toFixed(0)}K tokens` : ''}
+          </span>
+        </div>
+      );
+
+    case 'model_change':
+      return (
+        <div className="flex items-start gap-2 py-0.5 px-1 rounded hover:bg-surface-hover/50 opacity-75">
+          <span className="text-text-dim flex-shrink-0 w-16">{formatTime(msg.timestamp)}</span>
+          <ArrowDownUp className="w-3 h-3 text-purple-400 flex-shrink-0 mt-0.5" />
+          <span className="text-purple-300">Model: {msg.modelId}</span>
+        </div>
+      );
+
+    default:
+      return null;
+  }
+}
+
+// ─── Main component ───
 
 export function LiveFeed() {
   const [agentId] = useAtom(activeAgentIdAtom);
@@ -24,6 +135,7 @@ export function LiveFeed() {
   const [connected, setConnected] = useState(false);
   const [paused, setPaused] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
+  const [showTools, setShowTools] = useState(true);
   const eventSourceRef = useRef<EventSource | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pausedRef = useRef(paused);
@@ -59,8 +171,22 @@ export function LiveFeed() {
           timestamp: data.timestamp,
           text: data.text,
           model: data.model,
-          sessionId: data.sessionId?.slice(0, 8),
+          sessionId: data.sessionId,
           usage: data.usage,
+          cost: data.cost,
+          stopReason: data.stopReason,
+          hasThinking: data.hasThinking,
+          channel: data.channel,
+          channelName: data.channelName,
+          sender: data.sender,
+          toolName: data.toolName,
+          toolArgs: data.toolArgs,
+          toolStatus: data.toolStatus,
+          toolDuration: data.toolDuration,
+          toolError: data.toolError,
+          tokensBefore: data.tokensBefore,
+          provider: data.provider,
+          modelId: data.modelId,
         };
         setMessages(prev => {
           const updated = [...prev, msg];
@@ -97,6 +223,10 @@ export function LiveFeed() {
     return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
   };
 
+  const displayMessages = showTools
+    ? messages
+    : messages.filter(m => m.type !== 'tool_call' && m.type !== 'tool_result');
+
   return (
     <Card>
       <div className="flex items-center justify-between mb-3">
@@ -114,12 +244,20 @@ export function LiveFeed() {
             {unavailable ? 'Unavailable' : connected ? 'Connected' : 'Disconnected'}
           </Badge>
           {!unavailable && (
-            <Button
-              variant="ghost"
-              size="sm"
-              icon={paused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
-              onClick={() => setPaused(!paused)}
-            />
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<Wrench className={`w-3.5 h-3.5 ${showTools ? 'text-orange-400' : 'text-text-dim'}`} />}
+                onClick={() => setShowTools(!showTools)}
+              />
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={paused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+                onClick={() => setPaused(!paused)}
+              />
+            </>
           )}
         </div>
       </div>
@@ -134,33 +272,19 @@ export function LiveFeed() {
             <p>Kira uses Kimi API</p>
             <p className="text-xs mt-1">No live session feed available</p>
           </div>
-        ) : messages.length === 0 ? (
+        ) : displayMessages.length === 0 ? (
           <div className="flex items-center justify-center h-full text-text-dim text-sm">
             Waiting for activity...
           </div>
         ) : (
           <AnimatePresence initial={false}>
-            {messages.map(msg => (
+            {displayMessages.map(msg => (
               <motion.div
                 key={msg.id}
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
-                className="flex items-start gap-2 py-0.5 px-1 rounded hover:bg-surface-hover/50"
               >
-                <span className="text-text-dim flex-shrink-0 w-16">{formatTime(msg.timestamp)}</span>
-                <span className="flex-shrink-0">
-                  {msg.type === 'user' ? (
-                    <User className="w-3 h-3 text-signal-secondary" />
-                  ) : (
-                    <Bot className="w-3 h-3 text-signal-primary" />
-                  )}
-                </span>
-                <span className="text-text-bright flex-1 min-w-0 truncate">
-                  {msg.text || (msg.usage ? `[${msg.usage.outputTokens} tokens]` : `[${msg.type}]`)}
-                </span>
-                {msg.sessionId && (
-                  <span className="text-text-dim flex-shrink-0">{msg.sessionId}</span>
-                )}
+                <FeedRow msg={msg} formatTime={formatTime} />
               </motion.div>
             ))}
           </AnimatePresence>

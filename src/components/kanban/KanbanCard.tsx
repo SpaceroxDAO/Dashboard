@@ -10,6 +10,29 @@ const priorityDot: Record<string, string> = {
   low: 'bg-text-dim',
 };
 
+const PROJECT_COLORS: Record<string, string> = {
+  'teach-charlie': 'bg-blue-500/20 text-blue-400',
+  'job-search': 'bg-emerald-500/20 text-emerald-400',
+  'cognigy': 'bg-purple-500/20 text-purple-400',
+  'personal': 'bg-gray-500/20 text-gray-400',
+};
+
+function getProjectColor(project: string): string {
+  if (PROJECT_COLORS[project]) return PROJECT_COLORS[project];
+  // Hash-based fallback for unknown projects
+  const colors = [
+    'bg-pink-500/20 text-pink-400',
+    'bg-amber-500/20 text-amber-400',
+    'bg-cyan-500/20 text-cyan-400',
+    'bg-rose-500/20 text-rose-400',
+    'bg-teal-500/20 text-teal-400',
+    'bg-indigo-500/20 text-indigo-400',
+  ];
+  let hash = 0;
+  for (let i = 0; i < project.length; i++) hash = ((hash << 5) - hash + project.charCodeAt(i)) | 0;
+  return colors[Math.abs(hash) % colors.length];
+}
+
 interface KanbanCardProps {
   task: KanbanTask;
   onToggle: (taskId: string, newStatus: TaskStatus) => void;
@@ -79,6 +102,11 @@ export function KanbanCard({ task, onToggle }: KanbanCardProps) {
         >
           {task.title}
         </span>
+        {task.project && (
+          <span className={`inline-block text-[10px] leading-none px-1.5 py-0.5 rounded-full mt-1 ${getProjectColor(task.project)}`}>
+            {task.project}
+          </span>
+        )}
         {task.category && (
           <span className="block text-xs text-text-dim mt-0.5 truncate">{task.category}</span>
         )}

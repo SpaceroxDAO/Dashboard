@@ -53,7 +53,7 @@ export function useKanban() {
       setColumns(data.columns as KanbanColumns);
       setFileHashes(prev => ({ ...prev, [agentId]: data.fileHash }));
     } catch {
-      // Silently fail — dashboard will show cached data
+      // Silently fail -- dashboard will show cached data
     }
   }, [agentId, setColumns, setFileHashes]);
 
@@ -159,8 +159,9 @@ export function useKanban() {
     title: string,
     column: KanbanColumnId = 'inbox',
     priority?: 'high' | 'medium' | 'low',
+    project?: string,
   ) => {
-    // Optimistic update — create a temp task
+    // Optimistic update -- create a temp task
     const tempId = `temp-${Date.now()}`;
     const tempTask: KanbanTask = {
       id: tempId,
@@ -169,6 +170,7 @@ export function useKanban() {
       status: 'incomplete',
       priority: priority || 'medium',
       column,
+      project,
     };
 
     const prevColumns = { ...columns };
@@ -185,7 +187,7 @@ export function useKanban() {
     setColumns(newColumns);
 
     try {
-      const result = await apiCreateTask(agentId, title, column, priority);
+      const result = await apiCreateTask(agentId, title, column, priority, project);
       markDirtyWithCooldown(result.fileHash);
       // Re-fetch to get the real task ID
       await fetchKanban();
