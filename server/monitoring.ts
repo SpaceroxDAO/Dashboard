@@ -240,7 +240,7 @@ Get-ChildItem $dir -Filter '*.jsonl' | Where-Object { $_.LastWriteTime -ge $cuto
     try {
       $obj = $line | ConvertFrom-Json
       if ($obj.timestamp) { $last = $obj.timestamp }
-      if ($obj.type -eq 'assistant' -and $obj.message.usage) {
+      if ($obj.type -eq 'message' -and $obj.message.role -eq 'assistant' -and $obj.message.usage) {
         $msgs++; $inp += $obj.message.usage.input; $out += $obj.message.usage.output
       }
       if ($obj.type -eq 'model_change') { $model = $obj.modelId }
@@ -829,17 +829,19 @@ if ($latest) { Get-Content $latest.FullName | Select-Object -Last 20 }
             const obj = JSON.parse(line);
             const ts = obj.timestamp;
             if (!ts || ts <= lastSeenTimestamp) continue;
-            if (obj.type !== 'user' && obj.type !== 'assistant') continue;
+            // OpenClaw uses type:"message" with role inside message object
+            const msg = typeof obj.message === 'object' ? obj.message : null;
+            const role = msg?.role;
+            if (obj.type !== 'message' || (role !== 'user' && role !== 'assistant')) continue;
 
             lastSeenTimestamp = ts;
-            const msg = typeof obj.message === 'object' ? obj.message : null;
             const content = msg?.content;
             const text = Array.isArray(content)
               ? content.find((c: any) => c.type === 'text')?.text
               : (typeof content === 'string' ? content : undefined);
 
             broadcastSSE('message', {
-              type: obj.type,
+              type: role,
               timestamp: ts,
               text: text?.slice(0, 500),
               model: msg?.model,
@@ -909,7 +911,7 @@ Get-ChildItem $dir -Filter '*.jsonl' | Where-Object { $_.LastWriteTime -ge $cuto
   foreach ($line in (Get-Content $_.FullName)) {
     try {
       $obj = $line | ConvertFrom-Json
-      if (($obj.type -eq 'user' -or $obj.type -eq 'assistant') -and $obj.timestamp) {
+      if ($obj.type -eq 'message' -and ($obj.message.role -eq 'user' -or $obj.message.role -eq 'assistant') -and $obj.timestamp) {
         $msgs++
         $d = [datetime]::Parse($obj.timestamp)
         $key = "$([int]$d.DayOfWeek)-$($d.Hour)"
@@ -1100,7 +1102,7 @@ Get-ChildItem $dir -Filter '*.jsonl' | Where-Object { $_.LastWriteTime -ge $cuto
   foreach ($line in (Get-Content $_.FullName)) {
     try {
       $obj = $line | ConvertFrom-Json
-      if ($obj.type -eq 'assistant' -and $obj.message.usage -and $obj.timestamp) {
+      if ($obj.type -eq 'message' -and $obj.message.role -eq 'assistant' -and $obj.message.usage -and $obj.timestamp) {
         $r += @{ ts=$obj.timestamp; inp=$obj.message.usage.input; out=$obj.message.usage.output }
       }
     } catch {}
