@@ -27,7 +27,7 @@ function yieldEventLoop(): Promise<void> {
 
 type AgentId = 'finn' | 'kira';
 
-const FINN_PROJECT_DIR_PREFIX = '-Users-lume-clawd';
+const FINN_PROJECT_DIR_PREFIX = '-Users-lume';
 const KIRA_SSH_HOST = 'adami@100.117.33.89';
 const KIRA_SESSIONS_PATH = 'C:\\Users\\adami\\.openclaw\\agents\\agents\\kira\\sessions';
 
@@ -786,6 +786,115 @@ setInterval(async () => {
   try { await computeKiraRateLimits(); } catch { /* Kira offline */ }
 }, 2 * 60_000);
 
+/** Extract a feed event from a JSONL line. Returns null if not a user/assistant message. */
+function parseFeedEvent(line: string, sessionId: string, format: 'claude' | 'openclaw') {
+  try {
+    const obj = JSON.parse(line);
+    const ts = obj.timestamp;
+    if (!ts) return null;
+
+    let role: string | undefined;
+    let msg: any;
+
+    if (format === 'openclaw') {
+      if (obj.type !== 'message') return null;
+      msg = typeof obj.message === 'object' ? obj.message : null;
+      role = msg?.role;
+    } else {
+      // Claude Code: type is 'user' or 'assistant'
+      if (obj.type !== 'user' && obj.type !== 'assistant') return null;
+      role = obj.type;
+      msg = typeof obj.message === 'object' ? obj.message : null;
+    }
+
+    if (role !== 'user' && role !== 'assistant') return null;
+
+    const content = msg?.content;
+    const text = Array.isArray(content)
+      ? content.find((c: any) => c.type === 'text')?.text
+      : (typeof content === 'string' ? content : undefined);
+
+    if (!text) return null;
+
+    const usage = msg?.usage;
+    const usageData = format === 'openclaw'
+      ? (usage ? { inputTokens: usage.input || 0, outputTokens: usage.output || 0 } : undefined)
+      : (usage ? { inputTokens: usage.input_tokens || 0, outputTokens: usage.output_tokens || 0 } : undefined);
+
+    return {
+      type: role,
+      timestamp: ts,
+      text: text.slice(0, 500),
+      model: msg?.model,
+      sessionId: sessionId.slice(0, 8),
+      usage: usageData,
+    };
+  } catch { return null; }
+}
+
+/** Send recent history from Finn's local JSONL files to a newly connected SSE client. */
+async function backfillFinnFeed(res: Response) {
+  try {
+    const cutoff = Date.now() - 3600_000; // last hour
+    const projectDirs = await getProjectDirsForAgent('finn');
+    const recentEvents: Array<{ timestamp: string; [k: string]: any }> = [];
+
+    for (const dir of projectDirs) {
+      const dirPath = path.join(CLAUDE_PROJECTS_PATH, dir);
+      try {
+        const files = await fs.readdir(dirPath);
+        for (const f of files) {
+          if (!f.endsWith('.jsonl')) continue;
+          const fPath = path.join(dirPath, f);
+          const fStat = await fs.stat(fPath);
+          if (fStat.mtimeMs < cutoff) continue;
+
+          const content = await fs.readFile(fPath, 'utf-8');
+          const lines = content.trim().split('\n');
+          // Take last 5 lines from each recent file
+          for (const line of lines.slice(-5)) {
+            const evt = parseFeedEvent(line, f.replace('.jsonl', ''), 'claude');
+            if (evt) recentEvents.push(evt);
+          }
+        }
+      } catch { /* skip */ }
+    }
+
+    recentEvents.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    for (const evt of recentEvents.slice(-20)) {
+      try { res.write(`event: message\ndata: ${JSON.stringify(evt)}\n\n`); } catch { break; }
+    }
+  } catch { /* skip */ }
+}
+
+/** Send recent history from Kira's sessions via SSH to a newly connected SSE client. */
+async function backfillKiraFeed(res: Response) {
+  try {
+    const psScript = `
+$dir = '${KIRA_SESSIONS_PATH}'
+$cutoff = (Get-Date).AddHours(-1)
+$r = @()
+Get-ChildItem $dir -Filter '*.jsonl' | Where-Object { $_.LastWriteTime -ge $cutoff } | Sort-Object LastWriteTime -Descending | Select-Object -First 3 | ForEach-Object {
+  Get-Content $_.FullName | Select-Object -Last 5
+}
+Write-Output '---END---'
+`.trim();
+    const raw = await sshPowerShell(psScript);
+    if (!raw) return;
+
+    const lines = raw.split('\n').filter(l => l.trim() && l.trim() !== '---END---');
+    const events: Array<{ timestamp: string; [k: string]: any }> = [];
+    for (const line of lines) {
+      const evt = parseFeedEvent(line, 'kira', 'openclaw');
+      if (evt) events.push(evt);
+    }
+    events.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    for (const evt of events.slice(-20)) {
+      try { res.write(`event: message\ndata: ${JSON.stringify(evt)}\n\n`); } catch { break; }
+    }
+  } catch { /* SSH error, skip */ }
+}
+
 router.get('/api/live', (req: Request, res: Response) => {
   const agent = getAgentFromReq(req);
 
@@ -808,11 +917,17 @@ router.get('/api/live', (req: Request, res: Response) => {
   // Send initial connect event
   res.write(`event: connected\ndata: ${JSON.stringify({ clientId, timestamp: new Date().toISOString() })}\n\n`);
 
-  // Kira: poll the most recently modified session file every 10s
+  // Backfill recent history so the feed isn't empty on connect
+  if (agent === 'finn') {
+    backfillFinnFeed(res);
+  }
+
+  // Kira: backfill + poll the most recently modified session file every 10s
   let kiraPollInterval: ReturnType<typeof setInterval> | null = null;
   if (agent === 'kira') {
-    let lastSeenTimestamp = '';
+    backfillKiraFeed(res);
 
+    let lastSeenTimestamp = '';
     const pollKiraFeed = async () => {
       try {
         const psScript = `
@@ -825,40 +940,15 @@ if ($latest) { Get-Content $latest.FullName | Select-Object -Last 20 }
 
         const lines = raw.split('\n').filter(Boolean);
         for (const line of lines) {
-          try {
-            const obj = JSON.parse(line);
-            const ts = obj.timestamp;
-            if (!ts || ts <= lastSeenTimestamp) continue;
-            // OpenClaw uses type:"message" with role inside message object
-            const msg = typeof obj.message === 'object' ? obj.message : null;
-            const role = msg?.role;
-            if (obj.type !== 'message' || (role !== 'user' && role !== 'assistant')) continue;
-
-            lastSeenTimestamp = ts;
-            const content = msg?.content;
-            const text = Array.isArray(content)
-              ? content.find((c: any) => c.type === 'text')?.text
-              : (typeof content === 'string' ? content : undefined);
-
-            broadcastSSE('message', {
-              type: role,
-              timestamp: ts,
-              text: text?.slice(0, 500),
-              model: msg?.model,
-              sessionId: 'kira-live',
-              usage: msg?.usage ? {
-                inputTokens: msg.usage.input || 0,
-                outputTokens: msg.usage.output || 0,
-              } : undefined,
-            }, 'kira');
-          } catch { /* skip malformed */ }
+          const evt = parseFeedEvent(line, 'kira-live', 'openclaw');
+          if (!evt || !evt.timestamp || evt.timestamp <= lastSeenTimestamp) continue;
+          lastSeenTimestamp = evt.timestamp;
+          broadcastSSE('message', evt, 'kira');
         }
       } catch { /* SSH error, skip */ }
     };
 
     kiraPollInterval = setInterval(pollKiraFeed, 10_000);
-    // Fire once immediately
-    pollKiraFeed();
   }
 
   req.on('close', () => {

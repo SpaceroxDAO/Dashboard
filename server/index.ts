@@ -1363,7 +1363,7 @@ app.get('/api/system-info', async (req, res) => {
     ] = await Promise.all([
       fs.readdir(SCRIPTS_PATH).catch(() => []),
       fs.readdir(SKILLS_PATH, { withFileTypes: true }).catch(() => []),
-      getAllMemoryFilesRecursive().catch(() => []),
+      getAllMemoryFilesRecursive({ excludeArchive: true }).catch(() => []),
       readJsonFile(CRONS_JSON_PATH),
       readJsonFile(path.join(MEMORY_PATH, 'cron-health-alerts.json')),
       readMdFile(path.join(MEMORY_PATH, 'token-status.md')),
@@ -1460,7 +1460,20 @@ app.get('/api/scripts', async (req, res) => {
 async function readJsonFile(filePath: string): Promise<any> {
   try {
     const content = await fs.readFile(filePath, 'utf-8');
-    return JSON.parse(content);
+    try {
+      return JSON.parse(content);
+    } catch {
+      // If direct parse fails, try extracting JSON from content with leading garbage
+      // (e.g. OpenClaw CLI output prepended to crons.json)
+      const firstBrace = content.indexOf('{');
+      const firstBracket = content.indexOf('[');
+      let start = -1;
+      if (firstBrace >= 0 && firstBracket >= 0) start = Math.min(firstBrace, firstBracket);
+      else if (firstBrace >= 0) start = firstBrace;
+      else if (firstBracket >= 0) start = firstBracket;
+      if (start > 0) return JSON.parse(content.slice(start));
+      return null;
+    }
   } catch {
     return null;
   }
@@ -1587,7 +1600,7 @@ app.get('/api/dashboard', async (req, res) => {
       fs.readFile(path.join(MEMORY_PATH, 'checkpoint.md'), 'utf-8').catch(() => ''),
       fs.stat(path.join(MEMORY_PATH, 'checkpoint.md')).catch(() => null),
       fs.readdir(SCRIPTS_PATH).catch(() => []),
-      getAllMemoryFilesRecursive().catch(() => []),
+      getAllMemoryFilesRecursive({ excludeArchive: true }).catch(() => []),
       // New data sources
       readJsonFile(path.join(MEMORY_PATH, 'people-tracker.json')),
       readJsonFile(path.join(MEMORY_PATH, 'job-pipeline.json')),
@@ -2358,7 +2371,7 @@ app.get('/api/agents/:agentId/stats', async (req, res) => {
     }
 
     const [allFiles, skillEntries, rawCrons] = await Promise.all([
-      getAllMemoryFilesRecursive(),
+      getAllMemoryFilesRecursive({ excludeArchive: true }),
       fs.readdir(SKILLS_PATH, { withFileTypes: true }).catch(() => []),
       readJsonFile(CRONS_JSON_PATH),
     ]);
@@ -2472,21 +2485,27 @@ async function getKiraRemoteMemoryCategories() {
 
 // ─── Recursive file discovery ───
 
-async function getAllMemoryFilesRecursive(): Promise<string[]> {
+const VIEWABLE_EXTENSIONS = new Set(['.md', '.json', '.txt', '.jsonl', '.log']);
+
+async function getAllMemoryFilesRecursive(opts?: { excludeArchive?: boolean }): Promise<string[]> {
   const results: string[] = [];
-  await walkDir(MEMORY_PATH, 'memory', results);
+  await walkDir(MEMORY_PATH, 'memory', results, opts);
   return results.sort();
 }
 
-async function walkDir(dir: string, relPrefix: string, results: string[]): Promise<void> {
+async function walkDir(dir: string, relPrefix: string, results: string[], opts?: { excludeArchive?: boolean }): Promise<void> {
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
       const relPath = `${relPrefix}/${entry.name}`;
       if (entry.isDirectory()) {
-        await walkDir(path.join(dir, entry.name), relPath, results);
-      } else if (entry.isFile() && entry.name.endsWith('.md')) {
-        results.push(relPath);
+        if (opts?.excludeArchive && entry.name === '_archive') continue;
+        await walkDir(path.join(dir, entry.name), relPath, results, opts);
+      } else if (entry.isFile()) {
+        const ext = path.extname(entry.name).toLowerCase();
+        if (VIEWABLE_EXTENSIONS.has(ext)) {
+          results.push(relPath);
+        }
       }
     }
   } catch {
@@ -2505,11 +2524,10 @@ function prettyCategoryName(dirName: string): string {
 // ─── Build memory categories for an agent ───
 
 async function getAgentMemoryFiles(agentId: string) {
-  const allFiles = await getAllMemoryFilesRecursive();
-  const agentFiles = allFiles;
+  const allFiles = await getAllMemoryFilesRecursive({ excludeArchive: true });
 
   const groups: Record<string, string[]> = {};
-  for (const f of agentFiles) {
+  for (const f of allFiles) {
     const rel = f.replace(/^memory\//, '');
     const slashIdx = rel.lastIndexOf('/');
     const dir = slashIdx === -1 ? '' : rel.substring(0, slashIdx);
@@ -2526,7 +2544,8 @@ async function getAgentMemoryFiles(agentId: string) {
   });
 
   for (const key of sortedKeys) {
-    const categoryName = key === '_root' ? 'Root' : prettyCategoryName(key.split('/').pop()!);
+    const leafName = key.split('/').pop()!;
+    const categoryName = key === '_root' ? 'Root' : prettyCategoryName(leafName);
     const categoryId = key === '_root' ? `${agentId}-root` : `${agentId}-${key.replace(/\//g, '-')}`;
     const type = key === '_root' ? 'long-term' : 'reference';
     const cat = await buildCategory(categoryId, categoryName, type, groups[key]);
