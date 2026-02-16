@@ -835,7 +835,6 @@ function parseFeedEvent(line: string, sessionId: string, format: 'claude' | 'ope
 /** Send recent history from Finn's local JSONL files to a newly connected SSE client. */
 async function backfillFinnFeed(res: Response) {
   try {
-    const cutoff = Date.now() - 3600_000; // last hour
     const projectDirs = await getProjectDirsForAgent('finn');
     const recentEvents: Array<{ timestamp: string; [k: string]: any }> = [];
 
@@ -843,16 +842,22 @@ async function backfillFinnFeed(res: Response) {
       const dirPath = path.join(CLAUDE_PROJECTS_PATH, dir);
       try {
         const files = await fs.readdir(dirPath);
-        for (const f of files) {
-          if (!f.endsWith('.jsonl')) continue;
-          const fPath = path.join(dirPath, f);
-          const fStat = await fs.stat(fPath);
-          if (fStat.mtimeMs < cutoff) continue;
-
+        // Sort by filename descending (UUIDs with timestamps) and take most recent files
+        const jsonlFiles = files.filter(f => f.endsWith('.jsonl'));
+        // Stat and sort by mtime to find most recent
+        const withStats = await Promise.all(
+          jsonlFiles.map(async f => {
+            const fPath = path.join(dirPath, f);
+            const fStat = await fs.stat(fPath);
+            return { f, fPath, mtimeMs: fStat.mtimeMs };
+          })
+        );
+        withStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
+        // Take last 10 lines from 3 most recent files
+        for (const { f, fPath } of withStats.slice(0, 3)) {
           const content = await fs.readFile(fPath, 'utf-8');
           const lines = content.trim().split('\n');
-          // Take last 5 lines from each recent file
-          for (const line of lines.slice(-5)) {
+          for (const line of lines.slice(-10)) {
             const evt = parseFeedEvent(line, f.replace('.jsonl', ''), 'claude');
             if (evt) recentEvents.push(evt);
           }
@@ -872,10 +877,9 @@ async function backfillKiraFeed(res: Response) {
   try {
     const psScript = `
 $dir = '${KIRA_SESSIONS_PATH}'
-$cutoff = (Get-Date).AddHours(-1)
 $r = @()
-Get-ChildItem $dir -Filter '*.jsonl' | Where-Object { $_.LastWriteTime -ge $cutoff } | Sort-Object LastWriteTime -Descending | Select-Object -First 3 | ForEach-Object {
-  Get-Content $_.FullName | Select-Object -Last 5
+Get-ChildItem $dir -Filter '*.jsonl' | Sort-Object LastWriteTime -Descending | Select-Object -First 3 | ForEach-Object {
+  Get-Content $_.FullName | Select-Object -Last 10
 }
 Write-Output '---END---'
 `.trim();
