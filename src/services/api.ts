@@ -264,6 +264,94 @@ export async function executeQuickAction(actionId: string): Promise<{
   return response.json();
 }
 
+// ─── Skill Detail & Toggle ───
+
+export async function getSkillDetail(skillId: string): Promise<{
+  id: string;
+  documentation: string;
+  files: string[];
+  fileCount: number;
+  enabled: boolean;
+}> {
+  const response = await fetch(`${API_BASE}/api/skills/${encodeURIComponent(skillId)}`);
+  if (!response.ok) throw new Error('Failed to fetch skill detail');
+  return response.json();
+}
+
+export async function toggleSkill(skillId: string, enabled: boolean): Promise<{
+  success: boolean;
+  id: string;
+  enabled: boolean;
+}> {
+  const response = await fetch(`${API_BASE}/api/skills/${encodeURIComponent(skillId)}/toggle`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!response.ok) throw new Error('Failed to toggle skill');
+  return response.json();
+}
+
+// ─── Cron Execution ───
+
+export async function runCron(cronId: string): Promise<{
+  success: boolean;
+  cronId: string;
+  output?: string;
+  error?: string;
+  executedAt: string;
+}> {
+  const response = await fetch(`${API_BASE}/api/crons/${encodeURIComponent(cronId)}/run`, {
+    method: 'POST',
+  });
+  return response.json();
+}
+
+// ─── Goals Mutations ───
+
+export async function toggleMilestone(goalId: string, milestoneId: string): Promise<{
+  success: boolean;
+  goals: Array<{
+    id: string; agentId: string; title: string; description: string;
+    category: string; progress: number; status: string;
+    milestones: Array<{ id: string; title: string; completed: boolean }>;
+  }>;
+}> {
+  const response = await fetch(`${API_BASE}/api/goals/${encodeURIComponent(goalId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'toggle-milestone', milestoneId }),
+  });
+  if (!response.ok) throw new Error('Failed to toggle milestone');
+  return response.json();
+}
+
+export async function updateGoalStatus(goalId: string, status: string): Promise<{
+  success: boolean;
+  goals: Array<any>;
+}> {
+  const response = await fetch(`${API_BASE}/api/goals/${encodeURIComponent(goalId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'update-status', status }),
+  });
+  if (!response.ok) throw new Error('Failed to update goal status');
+  return response.json();
+}
+
+export async function createGoal(title: string, category: string, description?: string): Promise<{
+  success: boolean;
+  goals: Array<any>;
+}> {
+  const response = await fetch(`${API_BASE}/api/goals`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, category, description }),
+  });
+  if (!response.ok) throw new Error('Failed to create goal');
+  return response.json();
+}
+
 export async function getDashboardData(agentId?: string): Promise<DashboardDataResponse> {
   const url = agentId === 'kira'
     ? `${API_BASE}/api/dashboard/kira`

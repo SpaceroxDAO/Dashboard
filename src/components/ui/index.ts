@@ -9,3 +9,5 @@ export { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 export { KeyboardHint } from './KeyboardHint';
 export { ScrollToTop } from './ScrollToTop';
 export { CommandPalette } from './CommandPalette';
+export { DetailModal } from './DetailModal';
+export { DeleteConfirmDialog } from './DeleteConfirmDialog';

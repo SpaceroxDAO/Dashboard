@@ -75,6 +75,7 @@ app.get('/api/skills', async (req, res) => {
   try {
     const entries = await fs.readdir(SKILLS_PATH, { withFileTypes: true });
     const skillDirs = entries.filter(e => e.isDirectory());
+    const skillStates = await readSkillStates();
 
     const skills = await Promise.all(
       skillDirs.map(async (dir) => {
@@ -109,7 +110,7 @@ app.get('/api/skills', async (req, res) => {
           description: description || `${name} skill`,
           icon: guessSkillIcon(dir.name),
           category: guessSkillCategory(dir.name),
-          enabled: true,
+          enabled: skillStates[dir.name] !== false,
           commands: [],
           fileCount: allFiles.length,
         };
@@ -162,6 +163,70 @@ function guessSkillCategory(name: string): string {
   if (core.includes(name)) return 'core';
   return 'custom';
 }
+
+// ─── Skill detail & toggle ───
+
+const SKILL_STATES_PATH = path.join(MEMORY_PATH, 'system', 'skill-states.json');
+
+async function readSkillStates(): Promise<Record<string, boolean>> {
+  try {
+    const content = await fs.readFile(SKILL_STATES_PATH, 'utf-8');
+    return JSON.parse(content);
+  } catch {
+    return {};
+  }
+}
+
+app.get('/api/skills/:id', async (req, res) => {
+  try {
+    const skillId = req.params.id;
+    const skillPath = path.join(SKILLS_PATH, skillId);
+
+    let documentation = '';
+    for (const docFile of ['SKILL.md', 'README.md']) {
+      try {
+        documentation = await fs.readFile(path.join(skillPath, docFile), 'utf-8');
+        break;
+      } catch { /* next */ }
+    }
+
+    const files = await fs.readdir(skillPath).catch(() => []);
+    const states = await readSkillStates();
+
+    res.json({
+      id: skillId,
+      documentation,
+      files,
+      fileCount: files.length,
+      enabled: states[skillId] !== false,
+    });
+  } catch (error) {
+    console.error('Skill detail error:', error);
+    res.status(500).json({ error: 'Failed to load skill detail' });
+  }
+});
+
+app.patch('/api/skills/:id/toggle', async (req, res) => {
+  try {
+    const skillId = req.params.id;
+    const { enabled } = req.body;
+
+    // Verify skill exists
+    await fs.access(path.join(SKILLS_PATH, skillId));
+
+    // Ensure system directory exists
+    await fs.mkdir(path.join(MEMORY_PATH, 'system'), { recursive: true });
+
+    const states = await readSkillStates();
+    states[skillId] = enabled;
+    await fs.writeFile(SKILL_STATES_PATH, JSON.stringify(states, null, 2));
+
+    res.json({ success: true, id: skillId, enabled });
+  } catch (error) {
+    console.error('Skill toggle error:', error);
+    res.status(500).json({ error: 'Failed to toggle skill' });
+  }
+});
 
 // ─── Tasks (from memory/tasks.md) ───
 
@@ -835,6 +900,73 @@ app.get('/api/agents/:agentId/crons', async (req, res) => {
   }
 });
 
+// POST /api/crons/:cronId/run -- attempt to run a cron's underlying script
+app.post('/api/crons/:cronId/run', async (req, res) => {
+  try {
+    const { cronId } = req.params;
+
+    // Map common cron names to their script files
+    const cronScriptMap: Record<string, string> = {
+      'morning-briefing': 'scripts/morning-briefing.sh',
+      'oura-sync': 'scripts/oura-sync.js',
+      'token-status-update': 'scripts/token-status-check.sh',
+      'expense-sync': 'scripts/expense-sync.sh',
+      'evening-digest': 'scripts/evening-digest.sh',
+      'bill-tracker': 'scripts/bill-tracker.sh',
+      'calendar-sync': 'scripts/calendar-sync.sh',
+      'email-check': 'scripts/email-check.sh',
+      'backup-checkpoint': 'scripts/backup-checkpoint.sh',
+    };
+
+    const scriptRelPath = cronScriptMap[cronId];
+    if (!scriptRelPath) {
+      return res.json({
+        success: false,
+        cronId,
+        error: `Cron "${cronId}" is gateway-managed and cannot be triggered directly from the dashboard. Use the gateway or agent channel to trigger it.`,
+        executedAt: new Date().toISOString(),
+      });
+    }
+
+    const scriptFullPath = path.join(AGENTS_BASE_PATH, scriptRelPath);
+    try {
+      await fs.access(scriptFullPath);
+    } catch {
+      return res.json({
+        success: false,
+        cronId,
+        error: `Script not found: ${scriptRelPath}`,
+        executedAt: new Date().toISOString(),
+      });
+    }
+
+    const ext = path.extname(scriptFullPath);
+    const command = ext === '.js' ? 'node' : ext === '.py' ? 'python3' : 'bash';
+
+    const { stdout, stderr } = await execFileAsync(command, [scriptFullPath], {
+      timeout: 60000,
+      cwd: AGENTS_BASE_PATH,
+      env: { ...process.env, HOME: process.env.HOME || '/Users/lume' },
+    });
+
+    res.json({
+      success: true,
+      cronId,
+      output: stdout.substring(0, 5000),
+      stderr: stderr ? stderr.substring(0, 2000) : undefined,
+      executedAt: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    console.error('Cron run error:', error);
+    res.json({
+      success: false,
+      cronId: req.params.cronId,
+      error: error.message || 'Script execution failed',
+      executedAt: new Date().toISOString(),
+    });
+  }
+});
+
 // ─── Goals (from memory/goals.md) ───
 
 function parseGoalsFile(content: string, agentId: string) {
@@ -906,6 +1038,123 @@ app.get('/api/goals', async (req, res) => {
   } catch (error) {
     console.error('Goals error:', error);
     res.status(500).json({ error: 'Failed to read goals' });
+  }
+});
+
+// PATCH /api/goals/:goalId -- toggle milestone or update status
+app.patch('/api/goals/:goalId', async (req, res) => {
+  try {
+    const { goalId } = req.params;
+    const { action, milestoneId, status } = req.body;
+
+    const result = await withFileMutex('goals', async () => {
+      const goalsPath = path.join(MEMORY_PATH, 'goals.md');
+      const content = await fs.readFile(goalsPath, 'utf-8').catch(() => '');
+      const lines = content.split('\n');
+
+      if (action === 'toggle-milestone' && milestoneId) {
+        // Find the goal section, then find the milestone line
+        const goals = parseGoalsFile(content, 'finn');
+        const goal = goals.find(g => g.id === goalId);
+        if (!goal) throw new Error('Goal not found');
+
+        const milestone = goal.milestones.find(m => m.id === milestoneId);
+        if (!milestone) throw new Error('Milestone not found');
+
+        // Find and toggle the checkbox line matching this milestone title
+        let milestoneCount = 0;
+        let inGoalSection = false;
+        const goalMetaPattern = new RegExp(`<!--\\s*id:\\s*${goalId}\\s`);
+
+        for (let i = 0; i < lines.length; i++) {
+          if (goalMetaPattern.test(lines[i])) inGoalSection = true;
+          if (inGoalSection && lines[i].startsWith('---')) break;
+
+          if (inGoalSection && /^- \[[ x]\] /.test(lines[i])) {
+            const currentMilestoneId = `${goalId}-m${milestoneCount + 1}`;
+            if (currentMilestoneId === milestoneId) {
+              if (milestone.completed) {
+                lines[i] = lines[i].replace('- [x] ', '- [ ] ');
+              } else {
+                lines[i] = lines[i].replace('- [ ] ', '- [x] ');
+              }
+              break;
+            }
+            milestoneCount++;
+          }
+        }
+
+        // Update the progress in the metadata comment
+        const newContent = lines.join('\n');
+        const updatedGoals = parseGoalsFile(newContent, 'finn');
+        const updatedGoal = updatedGoals.find(g => g.id === goalId);
+        if (updatedGoal) {
+          // Update progress in the HTML comment
+          const progressPattern = new RegExp(`(<!--\\s*id:\\s*${goalId}\\s+status:\\s*\\S+\\s+progress:)\\s*\\d+`);
+          const finalContent = newContent.replace(progressPattern, `$1 ${updatedGoal.progress}`);
+          await fs.writeFile(goalsPath, finalContent, 'utf-8');
+          return { fileHash: computeFileHash(finalContent), goals: parseGoalsFile(finalContent, 'finn') };
+        }
+
+        await fs.writeFile(goalsPath, newContent, 'utf-8');
+        return { fileHash: computeFileHash(newContent), goals: parseGoalsFile(newContent, 'finn') };
+
+      } else if (action === 'update-status' && status) {
+        const statusPattern = new RegExp(`(<!--\\s*id:\\s*${goalId}\\s+status:)\\s*\\S+`);
+        if (!statusPattern.test(content)) throw new Error('Goal not found');
+        const newContent = content.replace(statusPattern, `$1 ${status}`);
+        await fs.writeFile(goalsPath, newContent, 'utf-8');
+        return { fileHash: computeFileHash(newContent), goals: parseGoalsFile(newContent, 'finn') };
+
+      } else {
+        throw new Error('Invalid action');
+      }
+    });
+
+    res.json({ success: true, ...result });
+  } catch (error: any) {
+    console.error('Goal update error:', error);
+    res.status(error.message?.includes('not found') ? 404 : 400)
+      .json({ error: error.message || 'Failed to update goal' });
+  }
+});
+
+// POST /api/goals -- create a new goal
+app.post('/api/goals', async (req, res) => {
+  try {
+    const { title, category, description } = req.body;
+    if (!title || !category) {
+      return res.status(400).json({ error: 'title and category are required' });
+    }
+
+    const result = await withFileMutex('goals', async () => {
+      const goalsPath = path.join(MEMORY_PATH, 'goals.md');
+      const content = await fs.readFile(goalsPath, 'utf-8').catch(() => '# Goals\n');
+
+      const id = `goal-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+$/, '')}`;
+      const newGoalBlock = [
+        '',
+        '---',
+        '',
+        `## ${category}`,
+        `<!-- id: ${id} status: active progress: 0 -->`,
+        `### ${title}`,
+        description || '',
+        '',
+        '**Milestones:**',
+        '- [ ] Define first milestone',
+        '',
+      ].join('\n');
+
+      const newContent = content.trimEnd() + '\n' + newGoalBlock;
+      await fs.writeFile(goalsPath, newContent, 'utf-8');
+      return { fileHash: computeFileHash(newContent), goals: parseGoalsFile(newContent, 'finn') };
+    });
+
+    res.json({ success: true, ...result });
+  } catch (error: any) {
+    console.error('Goal create error:', error);
+    res.status(500).json({ error: error.message || 'Failed to create goal' });
   }
 });
 
