@@ -420,3 +420,115 @@ export async function createTask(
   }
   return response.json();
 }
+
+// ─── Monitoring APIs ───
+
+export interface CostSummary {
+  totalCost: number;
+  totalCacheSavings: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheReadTokens: number;
+  totalCacheWriteTokens: number;
+  dailyCosts: Record<string, number>;
+  modelBreakdown: Record<string, { cost: number; tokens: number; messages: number }>;
+  recentSessions: Array<{
+    sessionId: string;
+    project: string;
+    model: string;
+    date: string;
+    totalCost: number;
+    cacheSavings: number;
+    messageCount: number;
+    lastActivity: string;
+  }>;
+  monthlyProjection: number;
+  dailyBurnRate: number;
+}
+
+export async function getCosts(days?: number): Promise<CostSummary> {
+  const url = days ? `${API_BASE}/api/costs?days=${days}` : `${API_BASE}/api/costs`;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error('Failed to fetch costs');
+  return response.json();
+}
+
+export interface HealthSnapshot {
+  timestamp: string;
+  cpu: number;
+  memUsed: number;
+  memTotal: number;
+  memPercent: number;
+  diskUsed: number;
+  diskTotal: number;
+  diskPercent: number;
+  loadAvg: number[];
+}
+
+export interface SystemHealthResponse {
+  current: HealthSnapshot;
+  history: HealthSnapshot[];
+  uptime: number;
+  hostname: string;
+  platform: string;
+  cpuModel: string;
+  cpuCount: number;
+}
+
+export async function getSystemHealth(): Promise<SystemHealthResponse> {
+  const response = await fetch(`${API_BASE}/api/system/health`);
+  if (!response.ok) throw new Error('Failed to fetch system health');
+  return response.json();
+}
+
+export interface HeatmapData {
+  grid: number[][];
+  dailyActivity: Record<string, number>;
+  totalSessions: number;
+  totalMessages: number;
+  peakHour: number;
+  peakDay: number;
+}
+
+export async function getActivityHeatmap(): Promise<HeatmapData> {
+  const response = await fetch(`${API_BASE}/api/activity/heatmap`);
+  if (!response.ok) throw new Error('Failed to fetch activity heatmap');
+  return response.json();
+}
+
+export interface RateLimits {
+  rolling5h: { tokens: number; requests: number };
+  rolling1h: { tokens: number; requests: number };
+  timestamp: string;
+}
+
+export async function getRateLimits(): Promise<RateLimits> {
+  const response = await fetch(`${API_BASE}/api/rate-limits`);
+  if (!response.ok) throw new Error('Failed to fetch rate limits');
+  return response.json();
+}
+
+export interface ServiceInfo {
+  name: string;
+  status: 'running' | 'stopped' | 'unknown';
+  pid?: number;
+  uptime?: string;
+  description: string;
+}
+
+export async function getServices(): Promise<{ services: ServiceInfo[] }> {
+  const response = await fetch(`${API_BASE}/api/services`);
+  if (!response.ok) throw new Error('Failed to fetch services');
+  return response.json();
+}
+
+export async function restartService(name: string): Promise<{ success: boolean }> {
+  const response = await fetch(`${API_BASE}/api/services/${encodeURIComponent(name)}/restart`, {
+    method: 'POST',
+  });
+  return response.json();
+}
+
+export function getSSEUrl(): string {
+  return `${API_BASE}/api/live`;
+}

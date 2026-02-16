@@ -5,6 +5,7 @@ import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { createHash } from 'crypto';
+import monitoringRouter from './monitoring.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -2566,6 +2567,9 @@ async function buildCategory(id: string, name: string, type: string, filePaths: 
     files: validFiles,
   };
 }
+
+// ─── Monitoring routes (costs, health, SSE, heatmap, services) ───
+app.use(monitoringRouter);
 
 app.listen(PORT, () => {
   console.log(`Agent Dashboard API running on http://localhost:${PORT}`);

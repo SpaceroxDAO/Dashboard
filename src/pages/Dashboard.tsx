@@ -16,6 +16,14 @@ import {
   SystemMonitoringPanel,
   KiraReflectionsPanel,
 } from '@/components/dashboard';
+import {
+  CostBreakdown,
+  SystemHealth,
+  ActivityHeatmap,
+  LiveFeed,
+  ServiceControls,
+  RateLimits,
+} from '@/components/monitoring';
 import { activeAgentAtom, latestHealthAtom, timelineEventsAtom, quickActionsAtom, addToastAtom, lastUpdatedAtom, isRefreshingAtom } from '@/store/atoms';
 import { useDataLoader } from '@/hooks';
 import { executeQuickAction } from '@/services/api';
@@ -56,12 +64,16 @@ export function DashboardPage() {
     }
   }, [addToast, loadLiveData]);
 
+  const handleToast = useCallback((msg: string, type: 'success' | 'error') => {
+    addToast({ message: msg, type });
+  }, [addToast]);
+
   const formatLastUpdated = (date: Date) => {
     const now = new Date();
     const diff = now.getTime() - date.getTime();
     const seconds = Math.floor(diff / 1000);
     const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
+    const hours = Math.floor(minutes / 60);
 
     if (seconds < 60) return 'Just now';
     if (minutes < 60) return `${minutes}m ago`;
@@ -122,6 +134,23 @@ export function DashboardPage() {
           )}
           {isFinn && <HabitsWidget />}
         </div>
+
+        {/* ── Monitoring Section ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <CostBreakdown />
+          <SystemHealth />
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <ActivityHeatmap />
+          <div className="space-y-6">
+            <RateLimits />
+            <ServiceControls onToast={handleToast} />
+          </div>
+        </div>
+
+        {/* Live Feed */}
+        <LiveFeed />
 
         {/* Quick actions */}
         {quickActions.length > 0 && (
