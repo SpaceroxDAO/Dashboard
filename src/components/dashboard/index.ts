@@ -12,3 +12,4 @@ export { HabitsWidget } from './HabitsWidget';
 export { FinnSupervisionPanel } from './FinnSupervisionPanel';
 export { SystemMonitoringPanel } from './SystemMonitoringPanel';
 export { KiraReflectionsPanel } from './KiraReflectionsPanel';
+export { FinanceWidget } from './FinanceWidget';

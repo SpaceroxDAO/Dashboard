@@ -1639,6 +1639,10 @@ app.get('/api/dashboard', async (req, res) => {
       socialBattery, streaksData, cronHealth, currentMode,
       ideasData, tokenStatusContent, billsContent,
       mealPlanContent, frictionContent,
+      // Crons, goals, missions, quick actions (also read below for re-use)
+      , , , ,
+      // Kira goals/missions via SSH
+      kiraGoalsContent, kiraMissionsContent,
     ] = await Promise.all([
       fs.readdir(HEALTH_PATH).catch(() => []),
       fs.readdir(SKILLS_PATH, { withFileTypes: true }).catch(() => []),
@@ -1666,6 +1670,9 @@ app.get('/api/dashboard', async (req, res) => {
       readMdFile(path.join(MEMORY_PATH, 'goals.md')),
       readMdFile(path.join(MEMORY_PATH, 'missions.md')),
       readJsonFile(path.join(MEMORY_PATH, 'quick-actions.json')),
+      // Kira goals/missions via SSH
+      sshReadFile('memory/goals.md').catch(() => null),
+      sshReadFile('memory/missions.md').catch(() => null),
     ]);
 
     // Destructure newly added items
@@ -1692,11 +1699,15 @@ app.get('/api/dashboard', async (req, res) => {
       });
     }
 
-    // Parse goals
-    const goals = goalsContent ? parseGoalsFile(goalsContent, 'finn') : [];
+    // Parse goals (merge Finn + Kira)
+    const finnGoals = goalsContent ? parseGoalsFile(goalsContent, 'finn') : [];
+    const kiraGoals = kiraGoalsContent ? parseGoalsFile(kiraGoalsContent, 'kira') : [];
+    const goals = [...finnGoals, ...kiraGoals];
 
-    // Parse missions
-    const missions = missionsContent ? parseMissionsFile(missionsContent, 'finn') : [];
+    // Parse missions (merge Finn + Kira)
+    const finnMissions = missionsContent ? parseMissionsFile(missionsContent, 'finn') : [];
+    const kiraMissions = kiraMissionsContent ? parseMissionsFile(kiraMissionsContent, 'kira') : [];
+    const missions = [...finnMissions, ...kiraMissions];
 
     // Quick actions
     const quickActions = quickActionsData?.actions || [];
