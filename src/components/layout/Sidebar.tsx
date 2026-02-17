@@ -18,6 +18,9 @@ import {
   WifiOff,
   Loader2,
   Gauge,
+  FolderKanban,
+  FileText,
+  User,
 } from 'lucide-react';
 import { sidebarCollapsedAtom, activeAgentAtom, agentsAtom, activeAgentIdAtom, connectionStatusAtom, activeMissionsAtom } from '@/store/atoms';
 import { X } from 'lucide-react';
@@ -29,14 +32,17 @@ interface SidebarProps {
 
 const navItems = [
   { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
+  { path: '/projects', icon: FolderKanban, label: 'Projects' },
+  { path: '/goals', icon: Target, label: 'Goals' },
+  { path: '/missions', icon: ListTodo, label: 'Mission Queue', showBadge: true },
+  { path: '/todos', icon: CheckSquare, label: 'To-Do List' },
+  { path: '/reports', icon: FileText, label: 'Reports' },
+  { path: '/personal', icon: User, label: 'Personal' },
+  { path: '/crons', icon: Clock, label: 'Cron Jobs' },
+  { path: '/skills', icon: Zap, label: 'Skills' },
   { path: '/dna', icon: Dna, label: 'DNA' },
   { path: '/memory', icon: FolderOpen, label: 'Memory' },
-  { path: '/skills', icon: Zap, label: 'Skills' },
-  { path: '/crons', icon: Clock, label: 'Cron Jobs' },
   { path: '/schedule', icon: Calendar, label: 'Schedule' },
-  { path: '/goals', icon: Target, label: 'Goals' },
-  { path: '/todos', icon: CheckSquare, label: 'To-Do List' },
-  { path: '/missions', icon: ListTodo, label: 'Mission Queue', showBadge: true },
 ];
 
 const bottomItems = [

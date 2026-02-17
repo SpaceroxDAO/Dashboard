@@ -17,6 +17,9 @@ import {
   TodosPage,
   MissionsPage,
   DNAPage,
+  ProjectsPage,
+  ReportsPage,
+  PersonalPage,
 } from '@/pages';
 import {
   connectionStatusAtom,
@@ -102,6 +105,9 @@ function AppContent() {
               <Route path="/missions" element={<MissionsPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/more" element={<MorePage />} />
+              <Route path="/projects" element={<ProjectsPage />} />
+              <Route path="/reports" element={<ReportsPage />} />
+              <Route path="/personal" element={<PersonalPage />} />
             </Routes>
           </PageTransition>
         </AnimatePresence>

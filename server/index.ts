@@ -281,9 +281,9 @@ function parseTasksFile(content: string) {
     const taskMatch = line.match(/^-\s*\[([ x~])\]\s*\*?\*?(.+?)(?:\*?\*?\s*(?:—.*)?)?$/);
     if (taskMatch) {
       const [, status, rawTitle] = taskMatch;
-      const projectMatch = rawTitle.match(/#([\w-]+)\s*$/);
+      const projectMatch = rawTitle.match(/(?:^|\s)#([\w-]+)/);
       const project = projectMatch ? projectMatch[1] : undefined;
-      const titleWithoutTag = rawTitle.replace(/#[\w-]+\s*$/, '').trim();
+      const titleWithoutTag = rawTitle.replace(/\s*#[\w-]+/, '').trim();
       idx++;
       tasks.push({
         id: `task-${idx}`,
@@ -394,10 +394,10 @@ function parseTaskFileAST(content: string, agentId: string): ASTNode[] {
     if (taskMatch && currentColumn) {
       const [, status, rawTitle] = taskMatch;
       // Extract #project tag
-      const projectMatch = rawTitle.match(/#([\w-]+)\s*$/);
+      const projectMatch = rawTitle.match(/(?:^|\s)#([\w-]+)/);
       const project = projectMatch ? projectMatch[1] : undefined;
       // Strip tag from title for display and ID generation
-      const titleWithoutTag = rawTitle.replace(/#[\w-]+\s*$/, '').trim();
+      const titleWithoutTag = rawTitle.replace(/\s*#[\w-]+/, '').trim();
       const cleanTitle = titleWithoutTag.replace(/\*\*/g, '').replace(/\s*—.*$/, '').trim();
       const taskId = makeTaskId(agentId, cleanTitle);
       nodes.push({

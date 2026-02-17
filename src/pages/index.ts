@@ -9,3 +9,6 @@ export { GoalsPage } from './Goals';
 export { TodosPage } from './Todos';
 export { MissionsPage } from './Missions';
 export { DNAPage } from './DNA';
+export { ProjectsPage } from './Projects';
+export { ReportsPage } from './Reports';
+export { PersonalPage } from './Personal';

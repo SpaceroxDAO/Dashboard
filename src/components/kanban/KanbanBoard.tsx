@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -20,10 +20,20 @@ import type { KanbanColumnId, KanbanColumns, KanbanTask } from '@/types';
 
 const COLUMN_ORDER: KanbanColumnId[] = ['inbox', 'in-progress', 'backlog', 'blocked', 'done'];
 
-export function KanbanBoard() {
+interface KanbanBoardProps {
+  initialProjectFilter?: string;
+}
+
+export function KanbanBoard({ initialProjectFilter }: KanbanBoardProps) {
   const { columns, moveTask, toggleStatus, addTask, setDragging } = useKanban();
   const [activeTask, setActiveTask] = useState<KanbanTask | null>(null);
-  const [projectFilter, setProjectFilter] = useState<string | null>(null);
+  const [projectFilter, setProjectFilter] = useState<string | null>(initialProjectFilter || null);
+
+  useEffect(() => {
+    if (initialProjectFilter) {
+      setProjectFilter(initialProjectFilter);
+    }
+  }, [initialProjectFilter]);
 
   // Extract all unique projects from all columns
   const allProjects = useMemo(() => {

@@ -5,11 +5,7 @@ import { PageContainer } from '@/components/layout';
 import { Button } from '@/components/ui';
 import {
   StatsGrid,
-  HealthSummary,
   QuickActions,
-  JobPipeline,
-  PeopleWidget,
-  HabitsWidget,
   FinnSupervisionPanel,
   SystemMonitoringPanel,
   KiraReflectionsPanel,
@@ -22,21 +18,19 @@ import {
   ServiceControls,
   RateLimits,
 } from '@/components/monitoring';
-import { activeAgentAtom, latestHealthAtom, quickActionsAtom, addToastAtom, lastUpdatedAtom, isRefreshingAtom } from '@/store/atoms';
+import { activeAgentAtom, quickActionsAtom, addToastAtom, lastUpdatedAtom, isRefreshingAtom } from '@/store/atoms';
 import { useDataLoader } from '@/hooks';
 import { executeQuickAction } from '@/services/api';
 import type { QuickAction } from '@/types';
 
 export function DashboardPage() {
   const [activeAgent] = useAtom(activeAgentAtom);
-  const [healthData] = useAtom(latestHealthAtom);
   const [quickActions] = useAtom(quickActionsAtom);
   const [, addToast] = useAtom(addToastAtom);
   const [lastUpdated] = useAtom(lastUpdatedAtom);
   const [isRefreshing] = useAtom(isRefreshingAtom);
   const { loadLiveData } = useDataLoader();
 
-  const isFinn = activeAgent?.type === 'finn';
   const isKira = activeAgent?.type === 'kira';
 
   const handleRefresh = useCallback(async () => {
@@ -97,22 +91,17 @@ export function DashboardPage() {
           </Button>
         </div>
 
+        {/* Live Feed — top of dashboard for both agents */}
+        <LiveFeed />
+
         {/* Stats Grid */}
         <StatsGrid />
 
-        {/* ── Finn-specific panels ── */}
-        {isFinn && healthData && (
-          <HealthSummary data={healthData} />
-        )}
+        {/* Health disabled */}
 
-        {isFinn && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <JobPipeline />
-            <PeopleWidget />
-          </div>
-        )}
+        {/* JobPipeline + PeopleWidget moved to Personal page */}
 
-        {/* ── Kira-specific panels ── */}
+        {/* Kira-specific panels */}
         {isKira && (
           <>
             <FinnSupervisionPanel />
@@ -121,9 +110,9 @@ export function DashboardPage() {
           </>
         )}
 
-        {isFinn && <HabitsWidget />}
+        {/* HabitsWidget moved to Personal page */}
 
-        {/* ── Monitoring Section ── */}
+        {/* Monitoring Section */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <CostBreakdown />
           <SystemHealth />
@@ -136,9 +125,6 @@ export function DashboardPage() {
             <ServiceControls onToast={handleToast} />
           </div>
         </div>
-
-        {/* Live Feed */}
-        <LiveFeed />
 
         {/* Quick actions */}
         {quickActions.length > 0 && (
