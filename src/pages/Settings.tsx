@@ -4,6 +4,7 @@ import {
   Server, Cpu, Activity, Wifi, WifiOff, Globe, Zap,
   Database, Bot, AlertTriangle, CheckCircle,
   ExternalLink,
+  LogOut,
 } from 'lucide-react';
 import { PageContainer } from '@/components/layout';
 import { Card, Badge } from '@/components/ui';
@@ -304,6 +305,19 @@ export function SettingsPage() {
               <span className="text-text-bright">{new Date().toISOString().split('T')[0]}</span>
             </div>
           </div>
+        </Card>
+
+        {/* Sign Out */}
+        <Card>
+          <button
+            className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-signal-alert hover:bg-signal-alert/10 transition-colors"
+            onClick={() => {
+              // Placeholder for sign out logic
+            }}
+          >
+            <LogOut className="w-5 h-5" />
+            <span className="font-medium">Sign Out</span>
+          </button>
         </Card>
       </div>
     </PageContainer>

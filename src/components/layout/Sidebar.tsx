@@ -9,7 +9,6 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
-  LogOut,
   Target,
   CheckSquare,
   ListTodo,
@@ -37,7 +36,6 @@ const navItems = [
   { path: '/missions', icon: ListTodo, label: 'Mission Queue', showBadge: true },
   { path: '/todos', icon: CheckSquare, label: 'To-Do List' },
   { path: '/reports', icon: FileText, label: 'Reports' },
-  { path: '/personal', icon: User, label: 'Personal' },
   { path: '/crons', icon: Clock, label: 'Cron Jobs' },
   { path: '/skills', icon: Zap, label: 'Skills' },
   { path: '/dna', icon: Dna, label: 'DNA' },
@@ -46,6 +44,7 @@ const navItems = [
 ];
 
 const bottomItems = [
+  { path: '/personal', icon: User, label: 'Personal' },
   { path: '/settings', icon: Settings, label: 'Settings' },
 ];
 
@@ -175,12 +174,6 @@ export function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
               </li>
             );
           })}
-          <li>
-            <button className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-muted hover:bg-surface-hover hover:text-text-bright">
-              <LogOut className="w-5 h-5 flex-shrink-0" />
-              <span className="font-medium">Sign Out</span>
-            </button>
-          </li>
         </ul>
 
         {/* Version */}
@@ -360,15 +353,6 @@ export function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
                 </li>
               );
             })}
-            <li>
-              <button
-                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-muted hover:bg-surface-hover hover:text-text-bright"
-                title={collapsed ? 'Sign Out' : undefined}
-              >
-                <LogOut className="w-5 h-5 flex-shrink-0" />
-                {!collapsed && <span className="font-medium">Sign Out</span>}
-              </button>
-            </li>
           </ul>
 
           {/* Collapse toggle */}
