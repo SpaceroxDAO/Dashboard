@@ -1105,9 +1105,13 @@ function parseGoalsFile(content: string, agentId: string) {
 
 app.get('/api/goals', async (req, res) => {
   try {
-    const content = await readMdFile(path.join(MEMORY_PATH, 'goals.md'));
-    const goals = content ? parseGoalsFile(content, 'finn') : [];
-    res.json({ goals });
+    const [finnContent, kiraContent] = await Promise.all([
+      readMdFile(path.join(MEMORY_PATH, 'goals.md')),
+      sshReadFile('memory/goals.md').catch(() => null),
+    ]);
+    const finnGoals = finnContent ? parseGoalsFile(finnContent, 'finn') : [];
+    const kiraGoals = kiraContent ? parseGoalsFile(kiraContent, 'kira') : [];
+    res.json({ goals: [...finnGoals, ...kiraGoals] });
   } catch (error) {
     console.error('Goals error:', error);
     res.status(500).json({ error: 'Failed to read goals' });
@@ -1299,9 +1303,13 @@ function parseMissionsFile(content: string, agentId: string) {
 
 app.get('/api/missions', async (req, res) => {
   try {
-    const content = await readMdFile(path.join(MEMORY_PATH, 'missions.md'));
-    const missions = content ? parseMissionsFile(content, 'finn') : [];
-    res.json({ missions });
+    const [finnContent, kiraContent] = await Promise.all([
+      readMdFile(path.join(MEMORY_PATH, 'missions.md')),
+      sshReadFile('memory/missions.md').catch(() => null),
+    ]);
+    const finnMissions = finnContent ? parseMissionsFile(finnContent, 'finn') : [];
+    const kiraMissions = kiraContent ? parseMissionsFile(kiraContent, 'kira') : [];
+    res.json({ missions: [...finnMissions, ...kiraMissions] });
   } catch (error) {
     console.error('Missions error:', error);
     res.status(500).json({ error: 'Failed to read missions' });
@@ -1999,7 +2007,9 @@ app.get('/api/dashboard/kira', async (req, res) => {
 /** Read a single file from Kira's machine via SSH */
 async function sshReadFile(relativePath: string): Promise<string | null> {
   const winPath = `${KIRA_BASE_PATH}\\${relativePath.replace(/\//g, '\\\\')}`;
-  const content = await sshExec(`type "${winPath}"`);
+  const raw = await sshExec(`type "${winPath}"`);
+  // Normalize Windows CRLF to Unix LF for parser compatibility
+  const content = raw.split(String.fromCharCode(13, 10)).join(String.fromCharCode(10));
   return content.trim() || null;
 }
 
