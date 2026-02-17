@@ -9,7 +9,21 @@ export function HabitsWidget() {
   const hasStreaks = streaks && streaks.length > 0;
   const hasIdeas = ideas && ideas.length > 0;
 
-  if (!hasStreaks && !hasIdeas) return null;
+  if (!hasStreaks && !hasIdeas) {
+    return (
+      <div className="bg-surface-elevated rounded-xl p-4 lg:p-6 panel-glow">
+        <h2 className="text-lg font-semibold text-text-bright mb-4 flex items-center gap-2">
+          <Flame className="w-5 h-5 text-signal-primary" />
+          Habits & Ideas
+        </h2>
+        <div className="text-center py-6">
+          <Flame className="w-8 h-8 text-text-dim/30 mx-auto mb-2" />
+          <p className="text-sm text-text-dim">No streaks or ideas yet</p>
+          <p className="text-xs text-text-muted mt-1">Habits and ideas will be tracked over time</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-surface-elevated rounded-xl p-4 lg:p-6 panel-glow">

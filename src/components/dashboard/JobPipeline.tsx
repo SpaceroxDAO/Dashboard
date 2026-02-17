@@ -18,7 +18,21 @@ const priorityDot: Record<string, string> = {
 export function JobPipeline() {
   const [jobs] = useAtom(jobPipelineAtom);
 
-  if (!jobs || jobs.length === 0) return null;
+  if (!jobs || jobs.length === 0) {
+    return (
+      <div className="bg-surface-elevated rounded-xl p-4 lg:p-6 panel-glow">
+        <h2 className="text-lg font-semibold text-text-bright mb-4 flex items-center gap-2">
+          <Briefcase className="w-5 h-5 text-signal-primary" />
+          Job Pipeline
+        </h2>
+        <div className="text-center py-6">
+          <Briefcase className="w-8 h-8 text-text-dim/30 mx-auto mb-2" />
+          <p className="text-sm text-text-dim">No active opportunities</p>
+          <p className="text-xs text-text-muted mt-1">Jobs will appear here when tracked</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-surface-elevated rounded-xl p-4 lg:p-6 panel-glow">

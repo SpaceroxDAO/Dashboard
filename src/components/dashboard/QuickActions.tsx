@@ -61,39 +61,48 @@ export function QuickActions({ actions, onAction }: QuickActionsProps) {
   return (
     <div className="bg-surface-elevated rounded-xl p-4 lg:p-6 panel-glow">
       <h2 className="text-lg font-semibold text-text-bright mb-4">Quick Actions</h2>
-      <div className="flex flex-wrap gap-3">
-        {actions.map((action) => {
-          const Icon = iconMap[action.icon] || Zap;
-          const isLoading = loadingId === action.id;
-          const result = lastResult[action.id];
+      {actions.length === 0 && (
+        <div className="text-center py-4">
+          <Zap className="w-8 h-8 text-text-dim/30 mx-auto mb-2" />
+          <p className="text-sm text-text-dim">No quick actions configured</p>
+          <p className="text-xs text-text-muted mt-1">Actions will appear when crons are set up</p>
+        </div>
+      )}
+      {actions.length > 0 && (
+        <div className="flex flex-wrap gap-3">
+          {actions.map((action) => {
+            const Icon = iconMap[action.icon] || Zap;
+            const isLoading = loadingId === action.id;
+            const result = lastResult[action.id];
 
-          return (
-            <motion.button
-              key={action.id}
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={() => handleAction(action)}
-              disabled={isLoading}
-              className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium disabled:opacity-50 transition-colors ${
-                result === 'success'
-                  ? 'bg-signal-online/20 text-signal-online'
-                  : result === 'failed'
-                  ? 'bg-signal-alert/20 text-signal-alert'
-                  : 'bg-surface-hover hover:bg-surface-active text-text-bright'
-              }`}
-            >
-              {isLoading ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : result === 'success' ? (
-                <CheckCircle className="w-4 h-4" />
-              ) : (
-                <Icon className="w-4 h-4" />
-              )}
-              <span>{action.label}</span>
-            </motion.button>
-          );
-        })}
-      </div>
+            return (
+              <motion.button
+                key={action.id}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => handleAction(action)}
+                disabled={isLoading}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium disabled:opacity-50 transition-colors ${
+                  result === 'success'
+                    ? 'bg-signal-online/20 text-signal-online'
+                    : result === 'failed'
+                    ? 'bg-signal-alert/20 text-signal-alert'
+                    : 'bg-surface-hover hover:bg-surface-active text-text-bright'
+                }`}
+              >
+                {isLoading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : result === 'success' ? (
+                  <CheckCircle className="w-4 h-4" />
+                ) : (
+                  <Icon className="w-4 h-4" />
+                )}
+                <span>{action.label}</span>
+              </motion.button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

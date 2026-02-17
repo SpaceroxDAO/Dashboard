@@ -9,19 +9,16 @@ import {
   PeopleWidget,
   HabitsWidget,
 } from '@/components/dashboard';
-import { activeAgentAtom, latestHealthAtom, quickActionsAtom, addToastAtom } from '@/store/atoms';
+import { latestHealthAtom, quickActionsAtom, addToastAtom } from '@/store/atoms';
 import { useDataLoader } from '@/hooks';
 import { executeQuickAction } from '@/services/api';
 import type { QuickAction } from '@/types';
 
 export function PersonalPage() {
-  const [activeAgent] = useAtom(activeAgentAtom);
   const [healthData] = useAtom(latestHealthAtom);
   const [quickActions] = useAtom(quickActionsAtom);
   const [, addToast] = useAtom(addToastAtom);
   const { loadLiveData } = useDataLoader();
-
-  const isFinn = activeAgent?.type === 'finn';
 
   const handleQuickAction = useCallback(async (action: QuickAction) => {
     const result = await executeQuickAction(action.id);
@@ -41,24 +38,16 @@ export function PersonalPage() {
           <h1 className="text-xl font-bold text-text-bright">Personal</h1>
         </div>
 
-        {/* Quick Actions */}
-        {quickActions.length > 0 && (
-          <QuickActions actions={quickActions} onAction={handleQuickAction} />
-        )}
+        <QuickActions actions={quickActions} onAction={handleQuickAction} />
 
-        {/* Health Data */}
-        {isFinn && healthData && (
-          <HealthSummary data={healthData} />
-        )}
+        <HealthSummary data={healthData} />
 
-        {/* Job Pipeline & People */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <JobPipeline />
           <PeopleWidget />
         </div>
 
-        {/* Habits */}
-        {isFinn && <HabitsWidget />}
+        <HabitsWidget />
       </div>
     </PageContainer>
   );
