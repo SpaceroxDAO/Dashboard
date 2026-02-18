@@ -3,7 +3,7 @@ import cors from 'cors';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { execFile, exec } from 'child_process';
+import { execFile, exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import { createHash } from 'crypto';
 import monitoringRouter from './monitoring.js';
@@ -1329,7 +1329,39 @@ app.get('/api/quick-actions', async (req, res) => {
   }
 });
 
-// ─── Quick Action Execution ───
+
+// Helper: resolve a cron name to its UUID from jobs.json
+async function resolveCronId(cronName: string, agent?: string): Promise<string> {
+  let rawJson: string;
+
+  if (agent === 'kira') {
+    // Read Kira's jobs.json via SSH from Windows
+    const sshResult = await execFileAsync('ssh', [
+      '-o', 'ConnectTimeout=10',
+      KIRA_SSH_HOST,
+      'type C:\\Users\\adami\\.openclaw\\cron\\jobs.json'
+    ], {
+      timeout: 15000,
+      env: { ...process.env, HOME: process.env.HOME || '/Users/lume' },
+    });
+    rawJson = sshResult.stdout;
+  } else {
+    // Read Finn's jobs.json locally
+    rawJson = await fs.readFile('/Users/lume/.openclaw/cron/jobs.json', 'utf-8');
+  }
+
+  const data = JSON.parse(rawJson);
+  const jobs = data?.jobs || [];
+  const job = jobs.find((j: any) => j.name === cronName);
+
+  if (!job || !job.id) {
+    throw new Error(`Cron job '${cronName}' not found in ${agent === 'kira' ? 'Kira' : 'Finn'}'s jobs.json`);
+  }
+
+  return job.id;
+}
+
+// --- Quick Action Execution ---
 
 app.post('/api/quick-actions/:actionId/execute', async (req, res) => {
   try {
@@ -1347,32 +1379,45 @@ app.post('/api/quick-actions/:actionId/execute', async (req, res) => {
     let stderr: string | undefined;
 
     if (action.type === 'cron') {
-      // Trigger a cron job by name via openclaw CLI
+      // Trigger a cron job by UUID via openclaw CLI (resolve name -> UUID first)
       if (!action.cronName) {
         return res.status(400).json({ error: 'Cron action missing cronName' });
       }
 
+      // Resolve cron name to UUID since openclaw cron run requires UUIDs
+      const cronId = await resolveCronId(action.cronName, action.agent);
+
+      // Fire-and-forget: spawn cron run in background, don't wait for completion
       if (action.agent === 'kira') {
-        // Kira crons run on Windows via SSH
-        const sshResult = await execFileAsync('ssh', [
+        const child = spawn('ssh', [
           '-o', 'ConnectTimeout=10',
-          'adami@100.117.33.89',
-          `openclaw cron run ${action.cronName}`
+          KIRA_SSH_HOST,
+          `openclaw cron run --timeout 300000 ${cronId}`
         ], {
-          timeout: 120000,
+          detached: true,
+          stdio: 'ignore',
           env: { ...process.env, HOME: process.env.HOME || '/Users/lume' },
         });
-        stdout = sshResult.stdout;
-        stderr = sshResult.stderr || undefined;
+        child.unref();
       } else {
-        const result = await execFileAsync('/Users/lume/.npm-global/bin/openclaw', ['cron', 'run', action.cronName], {
-          timeout: 120000,
+        const child = spawn('/Users/lume/.npm-global/bin/openclaw', ['cron', 'run', '--timeout', '300000', cronId], {
+          detached: true,
+          stdio: 'ignore',
           cwd: AGENTS_BASE_PATH,
           env: { ...process.env, HOME: process.env.HOME || '/Users/lume', PATH: '/Users/lume/.npm-global/bin:/usr/local/bin:/usr/bin:/bin' },
         });
-        stdout = result.stdout;
-        stderr = result.stderr || undefined;
+        child.unref();
       }
+
+      // Return immediately — cron runs asynchronously
+      return res.json({
+        success: true,
+        actionId,
+        status: 'dispatched',
+        cronId,
+        agent: action.agent || 'finn',
+        executedAt: new Date().toISOString(),
+      });
     } else {
       // Script-type action
       if (!action.scriptPath) {
