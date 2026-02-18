@@ -222,7 +222,7 @@ export function useDataLoader() {
       // ── Finn-specific data sources ──
       if (finnData) {
         setPeopleTracker(finnData.peopleTracker);
-        setJobPipeline(finnData.jobPipeline || []);
+        setJobPipeline(Array.isArray(finnData.jobPipeline) ? finnData.jobPipeline : (finnData.jobPipeline as any)?.pipeline || []);
         setCalendarEvents(finnData.calendarEvents || []);
         setInsightsData(finnData.insights);
         setSocialBattery(finnData.socialBattery);

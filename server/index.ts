@@ -1343,42 +1343,62 @@ app.post('/api/quick-actions/:actionId/execute', async (req, res) => {
       return res.status(404).json({ error: `Action '${actionId}' not found` });
     }
 
-    if (!action.scriptPath) {
-      return res.status(400).json({ error: 'Action has no script path' });
-    }
+    let stdout: string;
+    let stderr: string | undefined;
 
-    const scriptFullPath = path.join(AGENTS_BASE_PATH, action.scriptPath);
-
-    // Security: verify path is within workspace
-    if (!scriptFullPath.startsWith(AGENTS_BASE_PATH)) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    try {
-      await fs.access(scriptFullPath);
-    } catch {
-      return res.status(404).json({ error: `Script not found: ${action.scriptPath}` });
-    }
-
-    const ext = path.extname(scriptFullPath);
-    let command: string;
-    let args: string[];
-    if (ext === '.js') {
-      command = 'node';
-      args = [scriptFullPath, ...(action.args || [])];
-    } else if (ext === '.py') {
-      command = 'python3';
-      args = [scriptFullPath, ...(action.args || [])];
+    if (action.type === 'cron') {
+      // Trigger a cron job by name via openclaw CLI
+      if (!action.cronName) {
+        return res.status(400).json({ error: 'Cron action missing cronName' });
+      }
+      const result = await execFileAsync('/Users/lume/.npm-global/bin/openclaw', ['cron', 'run', action.cronName], {
+        timeout: 120000,
+        cwd: AGENTS_BASE_PATH,
+        env: { ...process.env, HOME: process.env.HOME || '/Users/lume', PATH: '/Users/lume/.npm-global/bin:/usr/local/bin:/usr/bin:/bin' },
+      });
+      stdout = result.stdout;
+      stderr = result.stderr || undefined;
     } else {
-      command = 'bash';
-      args = [scriptFullPath, ...(action.args || [])];
-    }
+      // Script-type action
+      if (!action.scriptPath) {
+        return res.status(400).json({ error: 'Action has no script path' });
+      }
 
-    const { stdout, stderr } = await execFileAsync(command, args, {
-      timeout: 60000,
-      cwd: AGENTS_BASE_PATH,
-      env: { ...process.env, HOME: process.env.HOME || '/Users/lume' },
-    });
+      const scriptFullPath = path.join(AGENTS_BASE_PATH, action.scriptPath);
+
+      // Security: verify path is within workspace
+      if (!scriptFullPath.startsWith(AGENTS_BASE_PATH)) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+
+      try {
+        await fs.access(scriptFullPath);
+      } catch {
+        return res.status(404).json({ error: `Script not found: ${action.scriptPath}` });
+      }
+
+      const ext = path.extname(scriptFullPath);
+      let command: string;
+      let args: string[];
+      if (ext === '.js') {
+        command = 'node';
+        args = [scriptFullPath, ...(action.args || [])];
+      } else if (ext === '.py') {
+        command = 'python3';
+        args = [scriptFullPath, ...(action.args || [])];
+      } else {
+        command = 'bash';
+        args = [scriptFullPath, ...(action.args || [])];
+      }
+
+      const result = await execFileAsync(command, args, {
+        timeout: 60000,
+        cwd: AGENTS_BASE_PATH,
+        env: { ...process.env, HOME: process.env.HOME || '/Users/lume' },
+      });
+      stdout = result.stdout;
+      stderr = result.stderr || undefined;
+    }
 
     res.json({
       success: true,
