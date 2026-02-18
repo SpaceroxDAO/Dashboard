@@ -1351,13 +1351,28 @@ app.post('/api/quick-actions/:actionId/execute', async (req, res) => {
       if (!action.cronName) {
         return res.status(400).json({ error: 'Cron action missing cronName' });
       }
-      const result = await execFileAsync('/Users/lume/.npm-global/bin/openclaw', ['cron', 'run', action.cronName], {
-        timeout: 120000,
-        cwd: AGENTS_BASE_PATH,
-        env: { ...process.env, HOME: process.env.HOME || '/Users/lume', PATH: '/Users/lume/.npm-global/bin:/usr/local/bin:/usr/bin:/bin' },
-      });
-      stdout = result.stdout;
-      stderr = result.stderr || undefined;
+
+      if (action.agent === 'kira') {
+        // Kira crons run on Windows via SSH
+        const sshResult = await execFileAsync('ssh', [
+          '-o', 'ConnectTimeout=10',
+          'adami@100.117.33.89',
+          `openclaw cron run ${action.cronName}`
+        ], {
+          timeout: 120000,
+          env: { ...process.env, HOME: process.env.HOME || '/Users/lume' },
+        });
+        stdout = sshResult.stdout;
+        stderr = sshResult.stderr || undefined;
+      } else {
+        const result = await execFileAsync('/Users/lume/.npm-global/bin/openclaw', ['cron', 'run', action.cronName], {
+          timeout: 120000,
+          cwd: AGENTS_BASE_PATH,
+          env: { ...process.env, HOME: process.env.HOME || '/Users/lume', PATH: '/Users/lume/.npm-global/bin:/usr/local/bin:/usr/bin:/bin' },
+        });
+        stdout = result.stdout;
+        stderr = result.stderr || undefined;
+      }
     } else {
       // Script-type action
       if (!action.scriptPath) {
