@@ -1536,54 +1536,41 @@ interface ServiceInfo {
 async function getFinnServiceStatus(): Promise<ServiceInfo[]> {
   const services: ServiceInfo[] = [];
 
-  const checks: Array<{ name: string; pattern: string; description: string }> = [
-    { name: 'api-server', pattern: 'tsx.*server/index.ts', description: 'Dashboard API server (port 3001)' },
-    { name: 'tailscale-funnel', pattern: 'tailscale.*funnel', description: 'Tailscale funnel for external access' },
-    { name: 'claude-code', pattern: 'claude', description: 'Claude Code CLI sessions' },
-  ];
+  // 1. API Server — if we're serving this request, we're running
+  const serverPid = process.pid;
+  let serverUptime = '';
+  try {
+    const { stdout: psOut } = await execAsync(`ps -p ${serverPid} -o etime= 2>/dev/null`);
+    serverUptime = psOut.trim();
+  } catch { /* skip */ }
+  services.push({ name: 'api-server', status: 'running', pid: serverPid, uptime: serverUptime, description: 'Dashboard API server (port 3001)' });
 
-  for (const check of checks) {
-    try {
-      const { stdout } = await execAsync(`pgrep -f '${check.pattern}' 2>/dev/null || true`);
-      const pids = stdout.trim().split('\n').filter(Boolean).map(Number);
-      if (pids.length > 0 && pids[0] > 0) {
-        // Get process uptime
-        let uptime = '';
-        try {
-          const { stdout: psOut } = await execAsync(`ps -p ${pids[0]} -o etime= 2>/dev/null`);
-          uptime = psOut.trim();
-        } catch { /* skip */ }
-        services.push({
-          name: check.name,
-          status: 'running',
-          pid: pids[0],
-          uptime,
-          description: check.description,
-        });
-      } else {
-        services.push({ name: check.name, status: 'stopped', description: check.description });
-      }
-    } catch {
-      services.push({ name: check.name, status: 'unknown', description: check.description });
-    }
+  // 2. Tailscale Funnel — check via `tailscale funnel status`
+  try {
+    const { stdout } = await execAsync(`/opt/homebrew/bin/tailscale funnel status 2>&1`);
+    const isOn = stdout.includes('Funnel on');
+    services.push({ name: 'tailscale-funnel', status: isOn ? 'running' : 'stopped', description: 'Tailscale funnel for external access' });
+  } catch {
+    services.push({ name: 'tailscale-funnel', status: 'unknown', description: 'Tailscale funnel for external access' });
   }
 
-  // Check launchd services
+  // 3. OpenClaw Gateway — check gateway health
   try {
-    const { stdout } = await execAsync('launchctl list 2>/dev/null | grep com.finn || true');
-    const launchdLines = stdout.trim().split('\n').filter(Boolean);
-    for (const line of launchdLines) {
-      const parts = line.split('\t');
-      const pid = parseInt(parts[0], 10);
-      const name = parts[2] || 'unknown';
-      services.push({
-        name: `launchd:${name}`,
-        status: pid > 0 ? 'running' : 'stopped',
-        pid: pid > 0 ? pid : undefined,
-        description: `launchd managed: ${name}`,
-      });
+    const { stdout } = await execAsync(`pgrep -f 'openclaw-gateway' 2>/dev/null || true`);
+    const pids = stdout.trim().split('\n').filter(Boolean).map(Number).filter(p => p > 0);
+    if (pids.length > 0) {
+      let uptime = '';
+      try {
+        const { stdout: psOut } = await execAsync(`ps -p ${pids[0]} -o etime= 2>/dev/null`);
+        uptime = psOut.trim();
+      } catch { /* skip */ }
+      services.push({ name: 'openclaw-gateway', status: 'running', pid: pids[0], uptime, description: 'OpenClaw agent gateway (Finn)' });
+    } else {
+      services.push({ name: 'openclaw-gateway', status: 'stopped', description: 'OpenClaw agent gateway (Finn)' });
     }
-  } catch { /* skip */ }
+  } catch {
+    services.push({ name: 'openclaw-gateway', status: 'unknown', description: 'OpenClaw agent gateway (Finn)' });
+  }
 
   return services;
 }
@@ -1591,30 +1578,41 @@ async function getFinnServiceStatus(): Promise<ServiceInfo[]> {
 async function getKiraServiceStatus(): Promise<ServiceInfo[]> {
   const services: ServiceInfo[] = [];
 
-  const checks: Array<{ name: string; processName: string; description: string }> = [
-    { name: 'kimi-api', processName: 'node', description: 'Kimi API service' },
-    { name: 'tailscale', processName: 'tailscaled', description: 'Tailscale VPN connection' },
-  ];
-
-  for (const check of checks) {
-    try {
-      const raw = await sshPowerShell(
-        `Get-Process -Name '${check.processName}' -ErrorAction SilentlyContinue | Select-Object -First 1 | Format-List Id`
-      );
-      const pidMatch = raw.match(/Id\s*:\s*(\d+)/);
-      if (pidMatch) {
-        services.push({
-          name: check.name,
-          status: 'running',
-          pid: parseInt(pidMatch[1], 10),
-          description: check.description,
-        });
-      } else {
-        services.push({ name: check.name, status: 'stopped', description: check.description });
-      }
-    } catch {
-      services.push({ name: check.name, status: 'unknown', description: check.description });
+  // 1. OpenClaw Gateway — check via scheduled task status
+  try {
+    const raw = await sshExec('openclaw gateway health 2>&1');
+    const isOk = raw.includes('OK');
+    if (isOk) {
+      services.push({ name: 'openclaw-gateway', status: 'running', description: 'OpenClaw agent gateway (Kira)' });
+    } else {
+      services.push({ name: 'openclaw-gateway', status: 'stopped', description: 'OpenClaw agent gateway (Kira)' });
     }
+  } catch {
+    services.push({ name: 'openclaw-gateway', status: 'unknown', description: 'OpenClaw agent gateway (Kira)' });
+  }
+
+  // 2. Tailscale — check if tailscaled is running
+  try {
+    const raw = await sshPowerShell(
+      `Get-Process -Name 'tailscaled' -ErrorAction SilentlyContinue | Select-Object -First 1 | Format-List Id`
+    );
+    const pidMatch = raw.match(/Id\s*:\s*(\d+)/);
+    if (pidMatch) {
+      services.push({ name: 'tailscale', status: 'running', pid: parseInt(pidMatch[1], 10), description: 'Tailscale VPN connection' });
+    } else {
+      services.push({ name: 'tailscale', status: 'stopped', description: 'Tailscale VPN connection' });
+    }
+  } catch {
+    services.push({ name: 'tailscale', status: 'unknown', description: 'Tailscale VPN connection' });
+  }
+
+  // 3. Discord — check if Kira's Discord is connected (from gateway health)
+  try {
+    const raw = await sshExec('openclaw gateway health 2>&1');
+    const discordOk = raw.includes('Discord: ok');
+    services.push({ name: 'discord', status: discordOk ? 'running' : 'stopped', description: 'Discord bot (@KiraBot)' });
+  } catch {
+    services.push({ name: 'discord', status: 'unknown', description: 'Discord bot (@KiraBot)' });
   }
 
   return services;
@@ -1646,8 +1644,8 @@ router.post('/api/services/:name/restart', async (req: Request, res: Response) =
     // Only allow specific services to be restarted
     const restartCommands: Record<string, { kill: string; start?: string }> = {
       'api-server': {
-        kill: "pkill -f 'tsx.*server/index.ts'",
-        start: `cd ${AGENTS_BASE_PATH}/agent-dashboard && npx tsx server/index.ts &`,
+        kill: "pkill -f 'tsx.*index\\.ts'",
+        start: `cd ${AGENTS_BASE_PATH}/agent-dashboard/server && npx tsx index.ts &`,
       },
     };
 
