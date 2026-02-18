@@ -1432,7 +1432,7 @@ app.get('/api/system-info', async (req, res) => {
       getAllMemoryFilesRecursive({ excludeArchive: true }).catch(() => []),
       readJsonFile(FINN_WORKSPACE_CRONS_PATH),
       readJsonFile(path.join(MEMORY_PATH, 'cron-health-alerts.json')),
-      readMdFile(path.join(MEMORY_PATH, 'token-status.md')),
+      readMdFile(path.join(MEMORY_PATH, 'system', 'token-status.md')),
       readMdFile(path.join(MEMORY_PATH, 'checkpoint.md')),
     ]);
 
@@ -1681,8 +1681,8 @@ app.get('/api/dashboard', async (req, res) => {
       readJsonFile(path.join(MEMORY_PATH, 'cron-health-alerts.json')),
       readJsonFile(path.join(MEMORY_PATH, 'current-mode.json')),
       readJsonFile(path.join(MEMORY_PATH, 'ideas.json')),
-      readMdFile(path.join(MEMORY_PATH, 'token-status.md')),
-      readMdFile(path.join(MEMORY_PATH, 'bills.md')),
+      readMdFile(path.join(MEMORY_PATH, 'system', 'token-status.md')),
+      readJsonFile(path.join(MEMORY_PATH, 'life-data', 'transactions.json')),
       readMdFile(path.join(MEMORY_PATH, 'meal-plan-current.md')),
       readMdFile(path.join(MEMORY_PATH, 'friction-points.md')),
       // Crons, goals, missions, quick actions
@@ -1786,7 +1786,7 @@ app.get('/api/dashboard', async (req, res) => {
 
     // Parse markdown data sources
     const tokenStatus = tokenStatusContent ? parseTokenStatus(tokenStatusContent) : null;
-    const bills = billsContent ? parseBills(billsContent) : [];
+    const bills = Array.isArray(billsContent) ? billsContent : [];
     const mealPlan = mealPlanContent ? parseMealPlan(mealPlanContent) : null;
     const frictionPoints = frictionContent ? parseFrictionPoints(frictionContent) : [];
     const habitStreaks = streaksData ? transformStreaks(streaksData) : [];
