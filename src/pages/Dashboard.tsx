@@ -5,7 +5,6 @@ import { PageContainer } from '@/components/layout';
 import { Button } from '@/components/ui';
 import {
   StatsGrid,
-  QuickActions,
   FinnSupervisionPanel,
   SystemMonitoringPanel,
   KiraReflectionsPanel,
@@ -18,14 +17,11 @@ import {
   ServiceControls,
   RateLimits,
 } from '@/components/monitoring';
-import { activeAgentAtom, quickActionsAtom, addToastAtom, lastUpdatedAtom, isRefreshingAtom } from '@/store/atoms';
+import { activeAgentAtom, addToastAtom, lastUpdatedAtom, isRefreshingAtom } from '@/store/atoms';
 import { useDataLoader } from '@/hooks';
-import { executeQuickAction } from '@/services/api';
-import type { QuickAction } from '@/types';
 
 export function DashboardPage() {
   const [activeAgent] = useAtom(activeAgentAtom);
-  const [quickActions] = useAtom(quickActionsAtom);
   const [, addToast] = useAtom(addToastAtom);
   const [lastUpdated] = useAtom(lastUpdatedAtom);
   const [isRefreshing] = useAtom(isRefreshingAtom);
@@ -40,20 +36,6 @@ export function DashboardPage() {
       type: connected ? 'success' : 'info',
     });
   }, [loadLiveData, addToast]);
-
-  const handleQuickAction = useCallback(async (action: QuickAction) => {
-    const result = await executeQuickAction(action.id);
-    if (result.success) {
-      addToast({
-        message: `${action.label} completed`,
-        type: 'success',
-      });
-      // Refresh data since script may have updated files
-      await loadLiveData();
-    } else {
-      throw new Error(result.error || 'Execution failed');
-    }
-  }, [addToast, loadLiveData]);
 
   const handleToast = useCallback((msg: string, type: 'success' | 'error') => {
     addToast({ message: msg, type });
@@ -126,10 +108,6 @@ export function DashboardPage() {
           </div>
         </div>
 
-        {/* Quick actions */}
-        {quickActions.length > 0 && (
-          <QuickActions actions={quickActions} onAction={handleQuickAction} />
-        )}
       </div>
     </PageContainer>
   );
