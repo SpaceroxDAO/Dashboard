@@ -1872,7 +1872,14 @@ app.get('/api/dashboard', async (req, res) => {
       // All new data sources
       peopleTracker: peopleTracker || null,
       jobPipeline: jobPipeline || [],
-      calendarEvents: Array.isArray(calendarEvents) ? calendarEvents : (calendarEvents?.events || []),
+      calendarEvents: (() => {
+        const raw = Array.isArray(calendarEvents) ? calendarEvents : ((calendarEvents as any)?.events || []);
+        return raw.map((e: any) => ({
+          subject: e.subject || e.title || 'Untitled',
+          start: e.start?.includes('T') ? e.start : (e.date ? e.date + 'T' + (e.start || '00:00') + ':00' : e.start),
+          end: e.end?.includes('T') ? e.end : (e.date ? e.date + 'T' + (e.end || '23:59') + ':00' : e.end),
+        }));
+      })(),
       insights: insightsSummary,
       socialBattery: socialBattery || null,
       habitStreaks,
