@@ -47,7 +47,6 @@ export function DashboardPage() {
     const seconds = Math.floor(diff / 1000);
     const minutes = Math.floor(seconds / 60);
     const hours = Math.floor(minutes / 60);
-
     if (seconds < 60) return 'Just now';
     if (minutes < 60) return `${minutes}m ago`;
     if (hours < 24) return `${hours}h ${minutes % 60}m ago`;
@@ -56,16 +55,13 @@ export function DashboardPage() {
 
   return (
     <PageContainer>
-      <div className="space-y-6">
-        {/* Header with refresh */}
-        <div className="flex items-center justify-end gap-2 sm:gap-3">
-          <span className="text-xs sm:text-sm text-text-dim">
-            Updated {formatLastUpdated(lastUpdated)}
-          </span>
+      <div className="space-y-3">
+        <div className="flex items-center justify-end gap-2">
+          <span className="text-xs text-text-dim">Updated {formatLastUpdated(lastUpdated)}</span>
           <Button
             variant="ghost"
             size="sm"
-            icon={<RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />}
+            icon={<RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />}
             onClick={handleRefresh}
             disabled={isRefreshing}
           >
@@ -73,17 +69,9 @@ export function DashboardPage() {
           </Button>
         </div>
 
-        {/* Live Feed — top of dashboard for both agents */}
         <LiveFeed />
-
-        {/* Stats Grid */}
         <StatsGrid />
 
-        {/* Health disabled */}
-
-        {/* JobPipeline + PeopleWidget moved to Personal page */}
-
-        {/* Kira-specific panels */}
         {isKira && (
           <>
             <FinnSupervisionPanel />
@@ -92,22 +80,18 @@ export function DashboardPage() {
           </>
         )}
 
-        {/* HabitsWidget moved to Personal page */}
-
-        {/* Monitoring Section */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <CostBreakdown />
           <SystemHealth />
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <ActivityHeatmap />
-          <div className="space-y-6">
+          <div className="space-y-3">
             <RateLimits />
             <ServiceControls onToast={handleToast} />
           </div>
         </div>
-
       </div>
     </PageContainer>
   );

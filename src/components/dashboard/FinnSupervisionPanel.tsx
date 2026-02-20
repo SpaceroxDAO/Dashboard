@@ -8,12 +8,12 @@ function MoodGauge({ label, value, max = 10 }: { label: string; value: number | 
   const color = pct >= 70 ? 'bg-signal-online' : pct >= 40 ? 'bg-signal-caution' : 'bg-signal-alert';
 
   return (
-    <div className="flex-1 min-w-[80px]">
-      <div className="flex items-center justify-between mb-1">
-        <span className="text-xs text-text-muted">{label}</span>
-        <span className="text-xs font-medium text-text-bright telemetry-value">{value}/{max}</span>
+    <div className="flex-1 min-w-[70px]">
+      <div className="flex items-center justify-between mb-0.5">
+        <span className="text-[10px] text-text-muted">{label}</span>
+        <span className="text-[10px] font-medium text-text-bright telemetry-value">{value}/{max}</span>
       </div>
-      <div className="h-1.5 bg-surface-active rounded-full overflow-hidden">
+      <div className="h-1 bg-surface-active rounded-full overflow-hidden">
         <div className={`h-full rounded-full ${color} transition-all`} style={{ width: `${pct}%` }} />
       </div>
     </div>
@@ -24,75 +24,61 @@ export function FinnSupervisionPanel() {
   const [supervision] = useAtom(finnSupervisionAtom);
 
   if (!supervision) return null;
-
   const { mood, workload, qaVerdict, tracking } = supervision;
-  const hasAnyData = mood || workload || qaVerdict || tracking;
-  if (!hasAnyData) return null;
+  if (!mood && !workload && !qaVerdict && !tracking) return null;
 
   return (
-    <div className="bg-surface-elevated rounded-xl p-4 lg:p-6 panel-glow">
-      <h2 className="text-lg font-semibold text-text-bright mb-4 flex items-center gap-2">
-        <Eye className="w-5 h-5 text-signal-primary" />
+    <div className="bg-surface-elevated rounded-xl p-3 panel-glow">
+      <h2 className="text-sm font-semibold text-text-bright mb-2 flex items-center gap-1.5">
+        <Eye className="w-4 h-4 text-signal-primary" />
         Finn Supervision
-        {mood?.date && (
-          <span className="ml-auto text-xs text-text-dim telemetry-value">{mood.date}</span>
-        )}
+        {mood?.date && <span className="ml-auto text-[10px] text-text-dim telemetry-value">{mood.date}</span>}
       </h2>
 
-      {/* Mood Gauges */}
       {mood && (
-        <div className="mb-4">
-          <h3 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-1.5">
-            <Brain className="w-3.5 h-3.5" />
-            Mood Assessment
+        <div className="mb-2">
+          <h3 className="text-[10px] font-medium text-text-muted uppercase tracking-wider mb-1.5 flex items-center gap-1">
+            <Brain className="w-3 h-3" /> Mood
           </h3>
-          <div className="flex flex-wrap gap-3">
+          <div className="flex flex-wrap gap-2">
             <MoodGauge label="Stress" value={mood.stress} />
             <MoodGauge label="Clarity" value={mood.clarity} />
-            <MoodGauge label="Engagement" value={mood.engagement} />
-            <MoodGauge label="Confidence" value={mood.confidence} />
+            <MoodGauge label="Engage" value={mood.engagement} />
+            <MoodGauge label="Conf" value={mood.confidence} />
           </div>
           {mood.verdict && (
-            <div className="mt-2 text-xs text-text-muted">
+            <div className="mt-1 text-[11px] text-text-muted">
               <span className="text-text-bright font-medium">Verdict:</span> {mood.verdict}
             </div>
           )}
           {mood.actionRequired && mood.actionRequired !== 'None' && (
-            <div className="mt-1 text-xs text-signal-caution flex items-center gap-1">
-              <AlertTriangle className="w-3 h-3" />
-              {mood.actionRequired}
+            <div className="mt-0.5 text-[11px] text-signal-caution flex items-center gap-0.5">
+              <AlertTriangle className="w-2.5 h-2.5" /> {mood.actionRequired}
             </div>
           )}
         </div>
       )}
 
-      {/* Workload + QA Row */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {/* Workload */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         {workload && (
-          <div className="bg-surface-hover/40 rounded-lg p-3">
-            <div className="flex items-center gap-2 mb-2">
-              <Gauge className="w-4 h-4 text-signal-secondary" />
-              <span className="text-xs font-medium text-text-muted uppercase tracking-wider">Workload</span>
+          <div className="bg-surface-hover/40 rounded-lg p-2">
+            <div className="flex items-center gap-1.5 mb-1">
+              <Gauge className="w-3 h-3 text-signal-secondary" />
+              <span className="text-[10px] font-medium text-text-muted uppercase tracking-wider">Workload</span>
             </div>
-            <div className="text-sm font-medium text-text-bright">{workload.verdict}</div>
-            <div className={`text-xs mt-1 ${
-              workload.riskLevel === 'Low' ? 'text-signal-online' :
-              workload.riskLevel === 'Medium' ? 'text-signal-caution' :
-              'text-signal-alert'
+            <div className="text-xs font-medium text-text-bright">{workload.verdict}</div>
+            <div className={`text-[10px] mt-0.5 ${
+              workload.riskLevel === 'Low' ? 'text-signal-online' : workload.riskLevel === 'Medium' ? 'text-signal-caution' : 'text-signal-alert'
             }`}>
               Risk: {workload.riskLevel}
-              {workload.confidence !== null && (
-                <span className="text-text-dim ml-2 telemetry-value">({workload.confidence}% conf)</span>
-              )}
+              {workload.confidence !== null && <span className="text-text-dim ml-1 telemetry-value">({workload.confidence}%)</span>}
             </div>
             {workload.indicators.length > 0 && (
-              <div className="mt-2 space-y-0.5">
+              <div className="mt-1 space-y-px">
                 {workload.indicators.map((ind, i) => (
-                  <div key={i} className="text-xs text-text-dim flex items-center gap-1.5">
-                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                      ind.status === 'OK' || ind.status === 'Normal' ? 'bg-signal-online' :
-                      ind.status === 'Warning' ? 'bg-signal-caution' : 'bg-signal-alert'
+                  <div key={i} className="text-[10px] text-text-dim flex items-center gap-1">
+                    <span className={`w-1 h-1 rounded-full flex-shrink-0 ${
+                      ind.status === 'OK' || ind.status === 'Normal' ? 'bg-signal-online' : ind.status === 'Warning' ? 'bg-signal-caution' : 'bg-signal-alert'
                     }`} />
                     {ind.metric}: {ind.status}
                   </div>
@@ -102,25 +88,18 @@ export function FinnSupervisionPanel() {
           </div>
         )}
 
-        {/* QA Verdict */}
         {qaVerdict && (
-          <div className="bg-surface-hover/40 rounded-lg p-3">
-            <div className="flex items-center gap-2 mb-2">
-              {qaVerdict.passed ? (
-                <CheckCircle className="w-4 h-4 text-signal-online" />
-              ) : (
-                <XCircle className="w-4 h-4 text-signal-alert" />
-              )}
-              <span className="text-xs font-medium text-text-muted uppercase tracking-wider">QA Check</span>
+          <div className="bg-surface-hover/40 rounded-lg p-2">
+            <div className="flex items-center gap-1.5 mb-1">
+              {qaVerdict.passed ? <CheckCircle className="w-3 h-3 text-signal-online" /> : <XCircle className="w-3 h-3 text-signal-alert" />}
+              <span className="text-[10px] font-medium text-text-muted uppercase tracking-wider">QA</span>
             </div>
-            <div className={`text-sm font-medium ${qaVerdict.passed ? 'text-signal-online' : 'text-signal-alert'}`}>
-              {qaVerdict.verdict}
-            </div>
-            <div className="text-xs text-text-dim mt-0.5">{qaVerdict.date}</div>
+            <div className={`text-xs font-medium ${qaVerdict.passed ? 'text-signal-online' : 'text-signal-alert'}`}>{qaVerdict.verdict}</div>
+            <div className="text-[10px] text-text-dim">{qaVerdict.date}</div>
             {qaVerdict.issues.length > 0 && (
-              <div className="mt-2 space-y-0.5">
+              <div className="mt-1 space-y-px">
                 {qaVerdict.issues.map((issue, i) => (
-                  <div key={i} className="text-xs text-signal-caution">- {issue}</div>
+                  <div key={i} className="text-[10px] text-signal-caution">- {issue}</div>
                 ))}
               </div>
             )}
@@ -128,28 +107,22 @@ export function FinnSupervisionPanel() {
         )}
       </div>
 
-      {/* Tracking: Strengths & Opportunities */}
       {tracking && (
-        <div className="mt-4 pt-3 border-t border-[var(--border-panel)]">
-          <h3 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-2 flex items-center gap-1.5">
-            <TrendingUp className="w-3.5 h-3.5" />
-            Performance Tracking
+        <div className="mt-2 pt-1.5 border-t border-[var(--border-panel)]">
+          <h3 className="text-[10px] font-medium text-text-muted uppercase tracking-wider mb-1 flex items-center gap-1">
+            <TrendingUp className="w-3 h-3" /> Tracking
           </h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-2 gap-2">
             {tracking.strengths.length > 0 && (
               <div>
-                <div className="text-xs text-signal-online mb-1">Strengths</div>
-                {tracking.strengths.map((s, i) => (
-                  <div key={i} className="text-xs text-text-muted truncate">+ {s}</div>
-                ))}
+                <div className="text-[10px] text-signal-online mb-0.5">Strengths</div>
+                {tracking.strengths.map((s, i) => <div key={i} className="text-[10px] text-text-muted truncate">+ {s}</div>)}
               </div>
             )}
             {tracking.opportunities.length > 0 && (
               <div>
-                <div className="text-xs text-signal-caution mb-1">Opportunities</div>
-                {tracking.opportunities.map((o, i) => (
-                  <div key={i} className="text-xs text-text-muted truncate">- {o}</div>
-                ))}
+                <div className="text-[10px] text-signal-caution mb-0.5">Opportunities</div>
+                {tracking.opportunities.map((o, i) => <div key={i} className="text-[10px] text-text-muted truncate">- {o}</div>)}
               </div>
             )}
           </div>

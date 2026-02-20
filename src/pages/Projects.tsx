@@ -27,14 +27,7 @@ function getProjectColors(project: string) {
 }
 
 interface ProjectSummary {
-  name: string;
-  inbox: number;
-  inProgress: number;
-  backlog: number;
-  blocked: number;
-  done: number;
-  total: number;
-  active: number;
+  name: string; inbox: number; inProgress: number; backlog: number; blocked: number; done: number; total: number; active: number;
 }
 
 export function ProjectsPage() {
@@ -44,13 +37,10 @@ export function ProjectsPage() {
   const projects = useMemo(() => {
     const map = new Map<string, ProjectSummary>();
     const COLS: KanbanColumnId[] = ['inbox', 'in-progress', 'backlog', 'blocked', 'done'];
-
     for (const col of COLS) {
       for (const task of columns[col]) {
         const tag = task.project || 'untagged';
-        if (!map.has(tag)) {
-          map.set(tag, { name: tag, inbox: 0, inProgress: 0, backlog: 0, blocked: 0, done: 0, total: 0, active: 0 });
-        }
+        if (!map.has(tag)) map.set(tag, { name: tag, inbox: 0, inProgress: 0, backlog: 0, blocked: 0, done: 0, total: 0, active: 0 });
         const p = map.get(tag)!;
         p.total++;
         if (col === 'inbox') p.inbox++;
@@ -61,68 +51,42 @@ export function ProjectsPage() {
         if (col !== 'done') p.active++;
       }
     }
-
     return Array.from(map.values()).sort((a, b) => b.active - a.active);
   }, [columns]);
 
   return (
     <PageContainer>
-      <div className="space-y-6">
-        <div className="flex items-center gap-3">
-          <FolderKanban className="w-6 h-6 text-signal-primary" />
-          <h1 className="text-xl font-bold text-text-bright">Projects</h1>
-          <span className="text-sm text-text-dim">{projects.length} projects</span>
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <FolderKanban className="w-5 h-5 text-signal-primary" />
+          <h1 className="text-lg font-bold text-text-bright">Projects</h1>
+          <span className="text-xs text-text-dim">{projects.length}</span>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
           {projects.map((project) => {
             const colors = getProjectColors(project.name);
             return (
               <button
                 key={project.name}
                 onClick={() => navigate(`/todos?project=${encodeURIComponent(project.name)}`)}
-                className={`text-left p-5 rounded-xl border ${colors.border} ${colors.bg} hover:brightness-110 transition-all group`}
+                className={`text-left p-3 rounded-lg border ${colors.border} ${colors.bg} hover:brightness-110 transition-all group`}
               >
-                <div className="flex items-center justify-between mb-3">
-                  <h2 className={`text-lg font-semibold ${colors.text}`}>
-                    #{project.name}
-                  </h2>
-                  <ArrowRight className="w-4 h-4 text-text-dim group-hover:text-text-muted transition-colors" />
+                <div className="flex items-center justify-between mb-1.5">
+                  <h2 className={`text-sm font-semibold ${colors.text}`}>#{project.name}</h2>
+                  <ArrowRight className="w-3.5 h-3.5 text-text-dim group-hover:text-text-muted transition-colors" />
                 </div>
-
-                <div className="text-2xl font-bold text-text-bright mb-1">
-                  {project.active} <span className="text-sm font-normal text-text-dim">active tasks</span>
+                <div className="text-lg font-bold text-text-bright">
+                  {project.active} <span className="text-[10px] font-normal text-text-dim">active</span>
                 </div>
-
-                <div className="flex gap-3 text-xs text-text-dim mt-3">
-                  {project.inbox > 0 && (
-                    <span className="flex items-center gap-1">
-                      <Inbox className="w-3 h-3" /> {project.inbox}
-                    </span>
-                  )}
-                  {project.inProgress > 0 && (
-                    <span className="flex items-center gap-1">
-                      <Play className="w-3 h-3" /> {project.inProgress}
-                    </span>
-                  )}
-                  {project.backlog > 0 && (
-                    <span className="flex items-center gap-1">
-                      <List className="w-3 h-3" /> {project.backlog}
-                    </span>
-                  )}
-                  {project.blocked > 0 && (
-                    <span className="flex items-center gap-1 text-signal-alert">
-                      <Ban className="w-3 h-3" /> {project.blocked}
-                    </span>
-                  )}
+                <div className="flex gap-2 text-[10px] text-text-dim mt-1.5">
+                  {project.inbox > 0 && <span className="flex items-center gap-0.5"><Inbox className="w-2.5 h-2.5" />{project.inbox}</span>}
+                  {project.inProgress > 0 && <span className="flex items-center gap-0.5"><Play className="w-2.5 h-2.5" />{project.inProgress}</span>}
+                  {project.backlog > 0 && <span className="flex items-center gap-0.5"><List className="w-2.5 h-2.5" />{project.backlog}</span>}
+                  {project.blocked > 0 && <span className="flex items-center gap-0.5 text-signal-alert"><Ban className="w-2.5 h-2.5" />{project.blocked}</span>}
                 </div>
-
                 {project.done > 0 && (
-                  <div className="mt-3 pt-3 border-t border-[var(--color-border-panel)]">
-                    <div className="text-xs text-text-dim">
-                      {project.done} completed
-                    </div>
-                  </div>
+                  <div className="mt-1.5 pt-1.5 border-t border-[var(--color-border-panel)] text-[10px] text-text-dim">{project.done} completed</div>
                 )}
               </button>
             );
@@ -130,9 +94,9 @@ export function ProjectsPage() {
         </div>
 
         {projects.length === 0 && (
-          <div className="text-center py-12 text-text-dim">
-            <FolderKanban className="w-12 h-12 mx-auto mb-3 opacity-30" />
-            <p>No projects yet. Add #project-tag to tasks to organize them.</p>
+          <div className="text-center py-8 text-text-dim">
+            <FolderKanban className="w-8 h-8 mx-auto mb-2 opacity-30" />
+            <p className="text-xs">No projects yet. Add #project-tag to tasks to organize them.</p>
           </div>
         )}
       </div>
