@@ -39,8 +39,6 @@ export function PersonalPage() {
           <h1 className="text-lg font-bold text-text-bright">Personal</h1>
         </div>
 
-        <QuickActions actions={quickActions} onAction={handleQuickAction} />
-
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <HealthSummary data={healthData} />
           <FinanceWidget />
@@ -52,6 +50,8 @@ export function PersonalPage() {
         </div>
 
         <HabitsWidget />
+
+        <QuickActions actions={quickActions} onAction={handleQuickAction} />
       </div>
     </PageContainer>
   );
