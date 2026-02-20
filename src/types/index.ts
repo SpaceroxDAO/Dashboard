@@ -231,6 +231,7 @@ export interface TrackedPerson {
   cadence_days: number;
   last_contact: string | null;
   notes: string;
+  birthday: string | null;
 }
 
 export interface PeopleTracker {
