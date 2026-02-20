@@ -1,5 +1,5 @@
 import { useAtom } from 'jotai';
-import { Calendar, Clock, ChevronRight, Info } from 'lucide-react';
+import { Calendar, Clock, ChevronRight } from 'lucide-react';
 import { PageContainer } from '@/components/layout';
 import { Card, Badge } from '@/components/ui';
 import { calendarEventsAtom } from '@/store/atoms';
@@ -41,16 +41,6 @@ export function SchedulePage() {
     <PageContainer title="Schedule">
       <div className="space-y-4 max-w-2xl">
         {/* Info banner */}
-        <div className="flex items-start gap-3 bg-signal-primary/5 border border-signal-primary/20 rounded-lg p-4">
-          <Info className="w-5 h-5 text-signal-primary mt-0.5 shrink-0" />
-          <div>
-            <p className="text-sm text-text-bright">Calendar events from Finn's morning briefing</p>
-            <p className="text-xs text-text-muted mt-1">
-              Full calendar integration (personal + work) coming soon. Currently showing events captured during the daily morning briefing sync.
-            </p>
-          </div>
-        </div>
-
         {sortedDays.length > 0 ? (
           sortedDays.map((day) => (
             <div key={day}>
