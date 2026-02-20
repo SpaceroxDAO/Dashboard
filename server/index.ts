@@ -1546,7 +1546,6 @@ app.get('/api/system-info', async (req, res) => {
         { name: 'Gmail (gog)', status: 'active', description: 'Email monitoring' },
         { name: 'Google Calendar', status: 'active', description: 'Personal calendar sync' },
         { name: 'Outlook', status: 'active', description: 'Work calendar + email' },
-        { name: 'Plaid', status: 'active', description: 'Financial transaction sync' },
         { name: 'LinkedIn', status: 'active', description: 'Job opportunity monitoring' },
         { name: 'Spotify', status: 'inactive', description: 'Music playback control' },
       ],
@@ -1742,7 +1741,7 @@ app.get('/api/dashboard', async (req, res) => {
       readJsonFile(path.join(MEMORY_PATH, 'current-mode.json')),
       readJsonFile(path.join(MEMORY_PATH, 'ideas.json')),
       readMdFile(path.join(MEMORY_PATH, 'system', 'token-status.md')),
-      readJsonFile(path.join(MEMORY_PATH, 'life-data', 'transactions.json')),
+      readJsonFile(path.join(MEMORY_PATH, 'finance', 'daily-recap.json')), // Finance recap data
       readMdFile(path.join(MEMORY_PATH, 'meal-plan-current.md')),
       readMdFile(path.join(MEMORY_PATH, 'friction-points.md')),
       // Crons, goals, missions, quick actions
@@ -1846,7 +1845,34 @@ app.get('/api/dashboard', async (req, res) => {
 
     // Parse markdown data sources
     const tokenStatus = tokenStatusContent ? parseTokenStatus(tokenStatusContent) : null;
-    const bills = Array.isArray(billsContent) ? billsContent : [];
+    // Transform finance recap into bills format for FinanceWidget
+    const bills = (() => {
+      if (!billsContent) return [];
+      const financeData = billsContent as any;
+      const result: Array<{ provider: string; amount: string; dueDate: string }> = [];
+      // Add upcoming bills
+      if (financeData.bills?.upcoming) {
+        result.push(...financeData.bills.upcoming);
+      }
+      // Add overdue bills (marked for visibility)
+      if (financeData.bills?.overdue) {
+        result.push(...financeData.bills.overdue.map((b: any) => ({
+          ...b,
+          provider: `⚠️ ${b.provider}` // Mark overdue
+        })));
+      }
+      // Add subscriptions as recurring "bills" for visibility
+      if (financeData.subscriptions?.items) {
+        financeData.subscriptions.items.slice(0, 5).forEach((sub: any) => {
+          result.push({
+            provider: `💳 ${sub.name}`,
+            amount: `$${sub.amount}/${sub.frequency === 'monthly' ? 'mo' : sub.frequency}`,
+            dueDate: 'Recurring'
+          });
+        });
+      }
+      return result;
+    })();
     const mealPlan = mealPlanContent ? parseMealPlan(mealPlanContent) : null;
     const frictionPoints = frictionContent ? parseFrictionPoints(frictionContent) : [];
     const habitStreaks = streaksData ? transformStreaks(streaksData) : [];
@@ -1888,6 +1914,13 @@ app.get('/api/dashboard', async (req, res) => {
       ideas: ideasData?.ideas || [],
       tokenStatus,
       bills,
+      financeSummary: billsContent ? {
+        weeklySpend: (billsContent as any).summary?.weeklySpend || 0,
+        monthlyProjection: (billsContent as any).summary?.monthlyProjection || 0,
+        subscriptionsBurn: (billsContent as any).summary?.subscriptionsBurn || 0,
+        aiCostsWeek: (billsContent as any).summary?.aiCostsWeek || 0,
+        generated: (billsContent as any).generated || null,
+      } : null,
       mealPlan,
       frictionPoints,
       // New live data
