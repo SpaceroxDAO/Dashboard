@@ -11,65 +11,60 @@ export function HabitsWidget() {
 
   if (!hasStreaks && !hasIdeas) {
     return (
-      <div className="bg-surface-elevated rounded-xl p-4 lg:p-6 panel-glow">
-        <h2 className="text-lg font-semibold text-text-bright mb-4 flex items-center gap-2">
-          <Flame className="w-5 h-5 text-signal-primary" />
+      <div className="bg-surface-elevated rounded-xl p-3 panel-glow">
+        <h2 className="text-sm font-semibold text-text-bright mb-2 flex items-center gap-1.5">
+          <Flame className="w-4 h-4 text-signal-primary" />
           Habits & Ideas
         </h2>
-        <div className="text-center py-6">
-          <Flame className="w-8 h-8 text-text-dim/30 mx-auto mb-2" />
-          <p className="text-sm text-text-dim">No streaks or ideas yet</p>
-          <p className="text-xs text-text-muted mt-1">Habits and ideas will be tracked over time</p>
+        <div className="text-center py-2">
+          <p className="text-xs text-text-dim">No streaks or ideas yet</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="bg-surface-elevated rounded-xl p-4 lg:p-6 panel-glow">
-      <h2 className="text-lg font-semibold text-text-bright mb-4 flex items-center gap-2">
-        <Flame className="w-5 h-5 text-signal-primary" />
+    <div className="bg-surface-elevated rounded-xl p-3 panel-glow">
+      <h2 className="text-sm font-semibold text-text-bright mb-2 flex items-center gap-1.5">
+        <Flame className="w-4 h-4 text-signal-primary" />
         Habits & Ideas
       </h2>
 
-      {/* Habit Streaks */}
-      {hasStreaks && (
-        <div className="mb-4">
-          <h3 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">Active Streaks</h3>
-          <div className="flex flex-wrap gap-2">
-            {streaks.map((streak) => (
-              <div
-                key={streak.name}
-                className="flex items-center gap-1.5 bg-surface-hover/60 rounded-md px-2.5 py-1.5"
-              >
-                <Flame className={`w-3 h-3 ${streak.streak >= 3 ? 'text-signal-caution' : 'text-text-dim'}`} />
-                <span className="text-xs text-text-bright capitalize">{streak.name}</span>
-                <span className="text-xs text-signal-primary telemetry-value font-medium">{streak.streak}d</span>
-              </div>
-            ))}
+      <div className="flex flex-col sm:flex-row gap-3">
+        {hasStreaks && (
+          <div className="flex-1">
+            <h3 className="text-[10px] font-medium text-text-muted uppercase tracking-wider mb-1">Streaks</h3>
+            <div className="flex flex-wrap gap-1">
+              {streaks.map((streak) => (
+                <div key={streak.name} className="flex items-center gap-1 bg-surface-hover/60 rounded px-1.5 py-0.5">
+                  <Flame className={`w-2.5 h-2.5 ${streak.streak >= 3 ? 'text-signal-caution' : 'text-text-dim'}`} />
+                  <span className="text-[11px] text-text-bright capitalize">{streak.name}</span>
+                  <span className="text-[11px] text-signal-primary telemetry-value font-medium">{streak.streak}d</span>
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Recent Ideas */}
-      {hasIdeas && (
-        <div>
-          <h3 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">
-            Ideas ({ideas.length})
-          </h3>
-          <div className="space-y-1.5">
-            {ideas.slice(0, 4).map((idea) => (
-              <div key={idea.id} className="flex items-start gap-2 text-xs">
-                <Lightbulb className="w-3 h-3 text-signal-secondary mt-0.5 flex-shrink-0" />
-                <span className="text-text-muted truncate">{idea.idea}</span>
-                {idea.heat > 1 && (
-                  <span className="text-signal-caution telemetry-value flex-shrink-0">{idea.heat}</span>
-                )}
-              </div>
-            ))}
+        {hasIdeas && (
+          <div className="flex-1">
+            <h3 className="text-[10px] font-medium text-text-muted uppercase tracking-wider mb-1">
+              Ideas ({ideas.length})
+            </h3>
+            <div className="space-y-0.5">
+              {ideas.slice(0, 4).map((idea) => (
+                <div key={idea.id} className="flex items-start gap-1 text-[11px]">
+                  <Lightbulb className="w-2.5 h-2.5 text-signal-secondary mt-0.5 flex-shrink-0" />
+                  <span className="text-text-muted truncate">{idea.idea}</span>
+                  {idea.heat > 1 && (
+                    <span className="text-signal-caution telemetry-value flex-shrink-0">{idea.heat}</span>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

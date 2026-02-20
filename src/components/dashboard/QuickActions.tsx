@@ -8,22 +8,10 @@ import {
 import type { QuickAction } from '@/types';
 
 const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
-  sun: Sun,
-  mail: Mail,
-  'map-pin': MapPin,
-  heart: Heart,
-  calendar: Calendar,
-  moon: Moon,
-  'bar-chart': BarChart,
-  play: Play,
-  terminal: Terminal,
-  clock: Clock,
-  globe: Globe,
-  'check-circle': CheckCircle,
-  zap: Zap,
-  'refresh-cw': RefreshCw,
-  save: Save,
-  'dollar-sign': DollarSign,
+  sun: Sun, mail: Mail, 'map-pin': MapPin, heart: Heart,
+  calendar: Calendar, moon: Moon, 'bar-chart': BarChart, play: Play,
+  terminal: Terminal, clock: Clock, globe: Globe, 'check-circle': CheckCircle,
+  zap: Zap, 'refresh-cw': RefreshCw, save: Save, 'dollar-sign': DollarSign,
 };
 
 interface QuickActionsProps {
@@ -59,17 +47,15 @@ export function QuickActions({ actions, onAction }: QuickActionsProps) {
   };
 
   return (
-    <div className="bg-surface-elevated rounded-xl p-4 lg:p-6 panel-glow">
-      <h2 className="text-lg font-semibold text-text-bright mb-4">Quick Actions</h2>
+    <div className="bg-surface-elevated rounded-xl p-3 panel-glow">
+      <h2 className="text-sm font-semibold text-text-bright mb-2">Quick Actions</h2>
       {actions.length === 0 && (
-        <div className="text-center py-4">
-          <Zap className="w-8 h-8 text-text-dim/30 mx-auto mb-2" />
-          <p className="text-sm text-text-dim">No quick actions configured</p>
-          <p className="text-xs text-text-muted mt-1">Actions will appear when crons are set up</p>
+        <div className="text-center py-2">
+          <p className="text-xs text-text-dim">No quick actions configured</p>
         </div>
       )}
       {actions.length > 0 && (
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap gap-1.5">
           {actions.map((action) => {
             const Icon = iconMap[action.icon] || Zap;
             const isLoading = loadingId === action.id;
@@ -78,11 +64,11 @@ export function QuickActions({ actions, onAction }: QuickActionsProps) {
             return (
               <motion.button
                 key={action.id}
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
+                whileHover={{ scale: 1.03 }}
+                whileTap={{ scale: 0.97 }}
                 onClick={() => handleAction(action)}
                 disabled={isLoading}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium disabled:opacity-50 transition-colors ${
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium disabled:opacity-50 transition-colors ${
                   result === 'success'
                     ? 'bg-signal-online/20 text-signal-online'
                     : result === 'failed'
@@ -91,11 +77,11 @@ export function QuickActions({ actions, onAction }: QuickActionsProps) {
                 }`}
               >
                 {isLoading ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <Loader2 className="w-3 h-3 animate-spin" />
                 ) : result === 'success' ? (
-                  <CheckCircle className="w-4 h-4" />
+                  <CheckCircle className="w-3 h-3" />
                 ) : (
-                  <Icon className="w-4 h-4" />
+                  <Icon className="w-3 h-3" />
                 )}
                 <span>{action.label}</span>
               </motion.button>

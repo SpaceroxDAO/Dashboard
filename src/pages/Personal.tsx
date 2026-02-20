@@ -33,21 +33,23 @@ export function PersonalPage() {
 
   return (
     <PageContainer>
-      <div className="space-y-6">
-        <div className="flex items-center gap-3">
-          <User className="w-6 h-6 text-signal-primary" />
-          <h1 className="text-xl font-bold text-text-bright">Personal</h1>
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <User className="w-5 h-5 text-signal-primary" />
+          <h1 className="text-lg font-bold text-text-bright">Personal</h1>
         </div>
 
         <QuickActions actions={quickActions} onAction={handleQuickAction} />
 
-        <HealthSummary data={healthData} />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <HealthSummary data={healthData} />
+          <FinanceWidget />
+        </div>
 
-        <FinanceWidget />
-
-        <JobPipeline />
-
-        <PeopleWidget />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <JobPipeline />
+          <PeopleWidget />
+        </div>
 
         <HabitsWidget />
       </div>

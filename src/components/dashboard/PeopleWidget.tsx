@@ -1,5 +1,5 @@
 import { useAtom } from 'jotai';
-import { Users, AlertCircle, Cake, MapPin, MessageCircle, Clock } from 'lucide-react';
+import { Users, AlertCircle, Cake } from 'lucide-react';
 import { peopleTrackerAtom } from '@/store/atoms';
 import type { TrackedPerson } from '@/types';
 
@@ -31,17 +31,11 @@ function getUpcomingBirthday(birthday: string | null): { daysUntil: number; disp
   const [month, day] = birthday.split('-').map(Number);
   const thisYear = new Date(now.getFullYear(), month - 1, day);
   const nextYear = new Date(now.getFullYear() + 1, month - 1, day);
-
   const target = thisYear.getTime() >= now.getTime() - 86400000 ? thisYear : nextYear;
   const daysUntil = Math.ceil((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-
   if (daysUntil > 14) return null;
-
   const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  return {
-    daysUntil,
-    display: `${monthNames[month - 1]} ${day}`,
-  };
+  return { daysUntil, display: `${monthNames[month - 1]} ${day}` };
 }
 
 function PersonRow({ person }: { person: TrackedPerson }) {
@@ -49,43 +43,21 @@ function PersonRow({ person }: { person: TrackedPerson }) {
   const overdue = isOverdue(person);
 
   return (
-    <div className="bg-surface-hover/40 rounded-lg p-3 flex items-start gap-3">
-      {overdue && (
-        <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0 bg-signal-caution" />
+    <div className="flex items-center gap-1.5 py-0.5 border-b border-surface-hover/40 last:border-0 text-[11px]">
+      <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${overdue ? 'bg-signal-caution' : 'bg-signal-online'}`} />
+      <span className="font-medium text-text-bright w-16 truncate flex-shrink-0">{person.name}</span>
+      <span className={`px-1 py-px rounded text-[10px] flex-shrink-0 ${relationshipColors[person.relationship] || 'bg-surface-active text-text-muted'}`}>
+        {person.relationship}
+      </span>
+      {person.location && (
+        <span className="text-text-dim truncate hidden sm:inline">{person.location}</span>
       )}
-      {!overdue && (
-        <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0 bg-signal-online" />
-      )}
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm font-medium text-text-bright">{person.name}</span>
-          <span className={`text-xs px-1.5 py-0.5 rounded-md ${relationshipColors[person.relationship] || 'bg-surface-active text-text-muted'}`}>
-            {person.relationship}
-          </span>
-          {person.location && (
-            <span className="text-xs text-text-dim flex items-center gap-0.5">
-              <MapPin className="w-3 h-3" />
-              {person.location}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-3 mt-1 text-xs text-text-dim">
-          <span className="flex items-center gap-0.5">
-            <MessageCircle className="w-3 h-3" />
-            {person.contact_method}
-          </span>
-          <span className="flex items-center gap-0.5">
-            <Clock className="w-3 h-3" />
-            every {person.cadence_days}d
-          </span>
-          <span className={overdue ? 'text-signal-caution' : ''}>
-            {daysSince !== null ? `${daysSince}d ago` : 'never contacted'}
-          </span>
-        </div>
-        {person.notes && (
-          <div className="text-xs text-text-muted mt-1">{person.notes}</div>
-        )}
-      </div>
+      <span className="ml-auto flex-shrink-0 text-text-dim telemetry-value">
+        {person.cadence_days}d
+      </span>
+      <span className={`flex-shrink-0 telemetry-value w-12 text-right ${overdue ? 'text-signal-caution' : 'text-text-dim'}`}>
+        {daysSince !== null ? `${daysSince}d` : 'never'}
+      </span>
     </div>
   );
 }
@@ -95,93 +67,68 @@ export function PeopleWidget() {
 
   if (!tracker || !tracker.people || tracker.people.length === 0) {
     return (
-      <div className="bg-surface-elevated rounded-xl p-4 lg:p-6 panel-glow">
-        <h2 className="text-lg font-semibold text-text-bright mb-4 flex items-center gap-2">
-          <Users className="w-5 h-5 text-signal-primary" />
+      <div className="bg-surface-elevated rounded-xl p-3 panel-glow">
+        <h2 className="text-sm font-semibold text-text-bright mb-2 flex items-center gap-1.5">
+          <Users className="w-4 h-4 text-signal-primary" />
           People
         </h2>
-        <div className="text-center py-6">
-          <Users className="w-8 h-8 text-text-dim/30 mx-auto mb-2" />
-          <p className="text-sm text-text-dim">No contacts tracked yet</p>
-          <p className="text-xs text-text-muted mt-1">People will appear after relationship checks</p>
+        <div className="text-center py-3">
+          <p className="text-xs text-text-dim">No contacts tracked yet</p>
         </div>
       </div>
     );
   }
 
-  // Birthday alerts (within 14 days)
   const upcomingBirthdays = tracker.people
     .map(p => ({ person: p, birthday: getUpcomingBirthday(p.birthday) }))
     .filter((b): b is { person: TrackedPerson; birthday: { daysUntil: number; display: string } } => b.birthday !== null)
     .sort((a, b) => a.birthday.daysUntil - b.birthday.daysUntil);
 
-  // Group by relationship
   const family = tracker.people.filter(p => familyRelationships.includes(p.relationship));
   const friends = tracker.people.filter(p => !familyRelationships.includes(p.relationship));
-
   const overdueCount = tracker.people.filter(isOverdue).length;
 
   return (
-    <div className="bg-surface-elevated rounded-xl p-4 lg:p-6 panel-glow">
-      <h2 className="text-lg font-semibold text-text-bright mb-4 flex items-center gap-2">
-        <Users className="w-5 h-5 text-signal-primary" />
+    <div className="bg-surface-elevated rounded-xl p-3 panel-glow">
+      <h2 className="text-sm font-semibold text-text-bright mb-2 flex items-center gap-1.5">
+        <Users className="w-4 h-4 text-signal-primary" />
         People
-        <span className="ml-auto flex items-center gap-3 text-xs">
+        <span className="ml-auto flex items-center gap-2 text-[10px]">
           {overdueCount > 0 && (
-            <span className="text-signal-caution flex items-center gap-1">
-              <AlertCircle className="w-3 h-3" />
-              {overdueCount} overdue
+            <span className="text-signal-caution flex items-center gap-0.5">
+              <AlertCircle className="w-2.5 h-2.5" />
+              {overdueCount}
             </span>
           )}
-          <span className="text-text-dim telemetry-value">{tracker.people.length} tracked</span>
+          <span className="text-text-dim telemetry-value">{tracker.people.length}</span>
         </span>
       </h2>
 
-      {/* Birthday Banner */}
       {upcomingBirthdays.length > 0 && (
-        <div className="mb-4 rounded-lg border border-signal-caution/20 bg-signal-caution/5 p-3">
+        <div className="mb-2 flex items-center gap-1.5 text-[11px] rounded px-2 py-1 border border-signal-caution/20 bg-signal-caution/5">
+          <Cake className="w-3 h-3 text-signal-caution flex-shrink-0" />
           {upcomingBirthdays.map(({ person, birthday }) => (
-            <div key={person.name} className="flex items-center gap-2 text-sm">
-              <Cake className="w-4 h-4 text-signal-caution" />
+            <span key={person.name}>
               <span className="text-text-bright font-medium">{person.name}</span>
-              <span className="text-text-dim">—</span>
-              <span className="text-signal-caution font-medium">
-                {birthday.daysUntil === 0
-                  ? 'Today!'
-                  : birthday.daysUntil === 1
-                    ? 'Tomorrow!'
-                    : `${birthday.display} (${birthday.daysUntil} days)`}
+              <span className="text-signal-caution ml-1">
+                {birthday.daysUntil === 0 ? 'today' : birthday.daysUntil === 1 ? 'tomorrow' : `${birthday.display} (${birthday.daysUntil}d)`}
               </span>
-            </div>
+            </span>
           ))}
         </div>
       )}
 
-      {/* Family Section */}
       {family.length > 0 && (
-        <div className="mb-4">
-          <div className="text-xs font-medium text-text-dim uppercase tracking-wider mb-2">
-            Family ({family.length})
-          </div>
-          <div className="space-y-2">
-            {family.map(person => (
-              <PersonRow key={person.name} person={person} />
-            ))}
-          </div>
+        <div className="mb-1.5">
+          <div className="text-[10px] font-medium text-text-dim uppercase tracking-wider mb-0.5">Family</div>
+          {family.map(person => <PersonRow key={person.name} person={person} />)}
         </div>
       )}
 
-      {/* Friends Section */}
       {friends.length > 0 && (
         <div>
-          <div className="text-xs font-medium text-text-dim uppercase tracking-wider mb-2">
-            Friends ({friends.length})
-          </div>
-          <div className="space-y-2">
-            {friends.map(person => (
-              <PersonRow key={person.name} person={person} />
-            ))}
-          </div>
+          <div className="text-[10px] font-medium text-text-dim uppercase tracking-wider mb-0.5">Friends</div>
+          {friends.map(person => <PersonRow key={person.name} person={person} />)}
         </div>
       )}
     </div>

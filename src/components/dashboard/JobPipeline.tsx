@@ -20,53 +20,52 @@ export function JobPipeline() {
 
   if (!jobs || jobs.length === 0) {
     return (
-      <div className="bg-surface-elevated rounded-xl p-4 lg:p-6 panel-glow">
-        <h2 className="text-lg font-semibold text-text-bright mb-4 flex items-center gap-2">
-          <Briefcase className="w-5 h-5 text-signal-primary" />
+      <div className="bg-surface-elevated rounded-xl p-3 panel-glow">
+        <h2 className="text-sm font-semibold text-text-bright mb-2 flex items-center gap-1.5">
+          <Briefcase className="w-4 h-4 text-signal-primary" />
           Job Pipeline
         </h2>
-        <div className="text-center py-6">
-          <Briefcase className="w-8 h-8 text-text-dim/30 mx-auto mb-2" />
-          <p className="text-sm text-text-dim">No active opportunities</p>
-          <p className="text-xs text-text-muted mt-1">Jobs will appear here when tracked</p>
+        <div className="text-center py-3">
+          <p className="text-xs text-text-dim">No active opportunities</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="bg-surface-elevated rounded-xl p-4 lg:p-6 panel-glow">
-      <h2 className="text-lg font-semibold text-text-bright mb-4 flex items-center gap-2">
-        <Briefcase className="w-5 h-5 text-signal-primary" />
+    <div className="bg-surface-elevated rounded-xl p-3 panel-glow">
+      <h2 className="text-sm font-semibold text-text-bright mb-2 flex items-center gap-1.5">
+        <Briefcase className="w-4 h-4 text-signal-primary" />
         Job Pipeline
-        <span className="ml-auto text-xs text-text-dim telemetry-value">{jobs.length} active</span>
+        <span className="ml-auto text-[10px] text-text-dim telemetry-value">{jobs.length} active</span>
       </h2>
 
-      <div className="space-y-3">
+      <div className="space-y-1">
         {jobs.map((job) => (
-          <div key={job.id} className="bg-surface-hover/40 rounded-lg p-3 flex items-start gap-3">
-            <div className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${priorityDot[job.priority] || priorityDot.medium}`} />
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-sm font-medium text-text-bright">{job.company}</span>
-                <span className={`text-xs px-1.5 py-0.5 rounded-md ${stageBadgeColors[job.stage] || 'bg-surface-active text-text-muted'}`}>
-                  {job.stage}
-                </span>
-              </div>
-              <div className="text-xs text-text-muted mt-0.5">{job.role}</div>
-              {job.comp && (
-                <div className="text-xs text-signal-online telemetry-value mt-1">{job.comp}</div>
-              )}
-              {job.next_action && (
-                <div className="text-xs text-text-dim mt-1 flex items-center gap-1">
-                  <ArrowRight className="w-3 h-3" />
-                  {job.next_action}
-                </div>
-              )}
-            </div>
+          <div key={job.id} className="flex items-center gap-2 py-1 border-b border-surface-hover/60 last:border-0">
+            <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${priorityDot[job.priority] || priorityDot.medium}`} />
+            <span className="text-xs font-medium text-text-bright truncate">{job.company}</span>
+            <span className={`text-[10px] px-1 py-px rounded ${stageBadgeColors[job.stage] || 'bg-surface-active text-text-muted'}`}>
+              {job.stage}
+            </span>
+            {job.comp && (
+              <span className="text-[10px] text-signal-online telemetry-value ml-auto flex-shrink-0">{job.comp}</span>
+            )}
           </div>
         ))}
       </div>
+
+      {jobs.some(j => j.next_action) && (
+        <div className="mt-1.5 pt-1.5 border-t border-surface-hover/40 space-y-0.5">
+          {jobs.filter(j => j.next_action).slice(0, 3).map((job) => (
+            <div key={`action-${job.id}`} className="flex items-center gap-1 text-[10px] text-text-dim">
+              <ArrowRight className="w-2.5 h-2.5" />
+              <span className="text-text-muted">{job.company}:</span>
+              <span className="truncate">{job.next_action}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
