@@ -6,7 +6,7 @@ import type {
   PeopleTracker, JobOpportunity, CalendarEvent, InsightsData,
   SocialBattery, HabitStreak, CronHealth, CurrentMode, Idea,
   TokenStatus, Bill, CheckpointData, MealPlan, FrictionPoint,
-  FinnSupervision, SystemMonitoring, KiraReflections,
+  FinnSupervision, SystemMonitoring, KiraReflections, FinanceSummary,
   KanbanColumns,
 } from '@/types';
 
@@ -195,6 +195,9 @@ export const tokenStatusAtom = atom<TokenStatus | null>(null);
 
 // Bills
 export const billsAtom = atom<Bill[]>([]);
+
+// Finance Summary
+export const financeSummaryAtom = atom<FinanceSummary | null>(null);
 
 // Checkpoint (keyed by agent)
 export const checkpointAtom = atom<CheckpointData | null>(null);

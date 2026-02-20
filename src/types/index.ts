@@ -356,6 +356,15 @@ export interface Bill {
   subject: string;
 }
 
+// Finance Summary
+export interface FinanceSummary {
+  weeklySpend: number;
+  monthlyProjection: number;
+  subscriptionsBurn: number;
+  aiCostsWeek: number;
+  generated: string | null;
+}
+
 // Checkpoint Types
 export interface CheckpointData {
   content: string;

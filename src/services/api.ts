@@ -161,6 +161,7 @@ export interface DashboardDataResponse {
   ideas: Idea[];
   tokenStatus: TokenStatus | null;
   bills: Bill[];
+  financeSummary: { weeklySpend: number; monthlyProjection: number; subscriptionsBurn: number; aiCostsWeek: number; generated: string | null } | null;
   mealPlan: MealPlan | null;
   frictionPoints: FrictionPoint[];
   // New live data
