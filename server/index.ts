@@ -1872,7 +1872,7 @@ app.get('/api/dashboard', async (req, res) => {
       // All new data sources
       peopleTracker: peopleTracker || null,
       jobPipeline: jobPipeline || [],
-      calendarEvents: calendarEvents || [],
+      calendarEvents: Array.isArray(calendarEvents) ? calendarEvents : (calendarEvents?.events || []),
       insights: insightsSummary,
       socialBattery: socialBattery || null,
       habitStreaks,
