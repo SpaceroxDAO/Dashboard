@@ -3,20 +3,19 @@ import { useAtom } from 'jotai';
 import { User } from 'lucide-react';
 import { PageContainer } from '@/components/layout';
 import {
-  HealthSummary,
+  HealthWidgetV2,
   QuickActions,
   JobPipeline,
   PeopleWidget,
   HabitsWidget,
   FinanceWidgetV2,
 } from '@/components/dashboard';
-import { latestHealthAtom, quickActionsAtom, addToastAtom } from '@/store/atoms';
+import { quickActionsAtom, addToastAtom } from '@/store/atoms';
 import { useDataLoader } from '@/hooks';
 import { executeQuickAction } from '@/services/api';
 import type { QuickAction } from '@/types';
 
 export function PersonalPage() {
-  const [healthData] = useAtom(latestHealthAtom);
   const [quickActions] = useAtom(quickActionsAtom);
   const [, addToast] = useAtom(addToastAtom);
   const { loadLiveData } = useDataLoader();
@@ -40,7 +39,7 @@ export function PersonalPage() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          <HealthSummary data={healthData} />
+          <HealthWidgetV2 />
           <FinanceWidgetV2 />
         </div>
 

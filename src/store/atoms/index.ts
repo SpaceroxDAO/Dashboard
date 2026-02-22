@@ -76,6 +76,10 @@ export const latestHealthAtom = atom((get) => {
   return data[0] ?? null;
 });
 
+// Extended Health Data (for HealthWidgetV2)
+import type { HealthExtended } from '@/types';
+export const healthExtendedAtom = atom<HealthExtended | null>(null);
+
 // UI State
 export const connectionStatusAtom = atom<ConnectionStatus>('disconnected');
 export const toastsAtom = atom<Toast[]>([]);

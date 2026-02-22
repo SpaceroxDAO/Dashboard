@@ -162,6 +162,18 @@ export interface DashboardDataResponse {
   tokenStatus: TokenStatus | null;
   bills: Bill[];
   financeSummary: { weeklySpend: number; monthlyProjection: number; subscriptionsBurn: number; aiCostsWeek: number; generated: string | null } | null;
+  healthExtended: {
+    lastUpdated: string;
+    latestScores: { sleep: number; readiness: number; activity: number };
+    scoreTrends: { sleep: number[]; readiness: number[]; activity: number[] };
+    sleepArchitecture: { deep: number; rem: number; light: number; total: number } | null;
+    sleepDebt: number;
+    hrvTrend: Array<{ date: string; hrv: number }>;
+    stressBalance: { stressMinutes: number; recoveryMinutes: number; daySummary: string } | null;
+    stepsProgress: { today: number; target: number; weeklyTotal: number; lastWeekTotal: number } | null;
+    weeklyComparison: { current: { sleep: number; readiness: number; activity: number; steps: number }; previous: { sleep: number; readiness: number; activity: number; steps: number } } | null;
+    insights: Array<{ type: string; message: string; severity: string }>;
+  } | null;
   financeExtended: {
     netWorthHistory: Array<{ date: string; netWorth: number; assets?: number; liabilities?: number }>;
     creditCard: { balance: number; minPayment: number; dueDate: string; creditScore: number } | null;

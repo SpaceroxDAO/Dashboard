@@ -1718,6 +1718,7 @@ app.get('/api/dashboard', async (req, res) => {
       socialBattery, streaksData, cronHealth, currentMode,
       ideasData, tokenStatusContent, billsContent,
       netWorthHistory, aiCostHistory, spendingAlerts, bankBalances,
+      ouraData,
       mealPlanContent, frictionContent,
       // Crons, goals, missions, quick actions (also read below for re-use)
       , , , ,
@@ -1743,6 +1744,7 @@ app.get('/api/dashboard', async (req, res) => {
       readJsonFile(path.join(MEMORY_PATH, 'ideas.json')),
       readMdFile(path.join(MEMORY_PATH, 'system', 'token-status.md')),
       readJsonFile(path.join(MEMORY_PATH, 'finance', 'daily-recap.json')), // Finance recap data
+      readJsonFile(path.join(MEMORY_PATH, 'health', 'oura-data.json')), // Oura health data
       readJsonFile(path.join(MEMORY_PATH, 'finance', 'net-worth-history.json')), // Net worth tracking
       readJsonFile(path.join(MEMORY_PATH, 'finance', 'ai-cost-history.json')), // AI cost tracking
       readJsonFile(path.join(MEMORY_PATH, 'finance', 'spending-alerts.json')), // Spending alerts
@@ -1942,6 +1944,163 @@ app.get('/api/dashboard', async (req, res) => {
         } : null,
         alerts: (spendingAlerts as any)?.alerts || [],
       },
+      healthExtended: (() => {
+        if (!ouraData) return null;
+        const data = ouraData as any;
+        const dailyData = data.dailyData || {};
+        const dates = Object.keys(dailyData).sort();
+        const last7 = dates.slice(-7);
+        
+        // Extract score trends
+        const scoreTrends = {
+          sleep: last7.map(d => dailyData[d]?.sleep?.score || 0).filter(s => s > 0),
+          readiness: last7.map(d => dailyData[d]?.readiness?.score || 0).filter(s => s > 0),
+          activity: last7.map(d => dailyData[d]?.activity?.score || 0).filter(s => s > 0),
+        };
+        
+        // Latest scores
+        const latestDate = dates[dates.length - 1];
+        const prevDate = dates.length > 1 ? dates[dates.length - 2] : null;
+        const latest = dailyData[latestDate] || dailyData[prevDate] || {};
+        const latestScores = {
+          sleep: latest.sleep?.score || (prevDate ? dailyData[prevDate]?.sleep?.score : 0) || 0,
+          readiness: latest.readiness?.score || (prevDate ? dailyData[prevDate]?.readiness?.score : 0) || 0,
+          activity: latest.activity?.score || (prevDate ? dailyData[prevDate]?.activity?.score : 0) || 0,
+        };
+        
+        // Sleep architecture from latest sleep session
+        const latestWithSleep = [...dates].reverse().find(d => dailyData[d]?.sleepSessions?.length > 0);
+        const sleepSessions = latestWithSleep ? dailyData[latestWithSleep].sleepSessions : [];
+        const mainSleep = sleepSessions.find((s: any) => s.totalSleepDuration?.totalMinutes > 60) || sleepSessions[0];
+        const sleepArchitecture = mainSleep ? {
+          deep: mainSleep.deepSleepDuration?.totalMinutes || 0,
+          rem: mainSleep.remSleepDuration?.totalMinutes || 0,
+          light: mainSleep.lightSleepDuration?.totalMinutes || 0,
+          total: mainSleep.totalSleepDuration?.totalMinutes || 0,
+        } : null;
+        
+        // Sleep debt (8hr target = 480min per day)
+        const targetPerDay = 480;
+        const sleepDebt = last7.reduce((debt, d) => {
+          const sessions = dailyData[d]?.sleepSessions || [];
+          const totalSlept = sessions.reduce((t: number, s: any) => t + (s.totalSleepDuration?.totalMinutes || 0), 0);
+          return debt + (targetPerDay - totalSlept);
+        }, 0);
+        
+        // HRV trend
+        const hrvTrend = last7
+          .map(d => {
+            const sessions = dailyData[d]?.sleepSessions || [];
+            const mainSession = sessions.find((s: any) => s.averageHrv > 0);
+            return mainSession ? { date: d, hrv: mainSession.averageHrv } : null;
+          })
+          .filter((x): x is { date: string; hrv: number } => x !== null);
+        
+        // Stress balance from yesterday
+        const latestWithStress = [...dates].reverse().find(d => dailyData[d]?.stress?.daySummary);
+        const stress = latestWithStress ? dailyData[latestWithStress].stress : null;
+        const stressBalance = stress ? {
+          stressMinutes: stress.stressHighMinutes || 0,
+          recoveryMinutes: stress.recoveryHighMinutes || 0,
+          daySummary: stress.daySummary || 'unknown',
+        } : null;
+        
+        // Steps progress
+        const latestWithSteps = [...dates].reverse().find(d => dailyData[d]?.activity?.steps > 0);
+        const todaySteps = latestWithSteps ? dailyData[latestWithSteps].activity.steps : 0;
+        const weeklySteps = last7.reduce((t, d) => t + (dailyData[d]?.activity?.steps || 0), 0);
+        const prevWeekDates = dates.slice(-14, -7);
+        const lastWeekSteps = prevWeekDates.reduce((t, d) => t + (dailyData[d]?.activity?.steps || 0), 0);
+        const stepsProgress = {
+          today: todaySteps,
+          target: 7000,
+          weeklyTotal: weeklySteps,
+          lastWeekTotal: lastWeekSteps,
+        };
+        
+        // Weekly comparison
+        const currentWeekAvg = {
+          sleep: Math.round(scoreTrends.sleep.reduce((a, b) => a + b, 0) / (scoreTrends.sleep.length || 1)),
+          readiness: Math.round(scoreTrends.readiness.reduce((a, b) => a + b, 0) / (scoreTrends.readiness.length || 1)),
+          activity: Math.round(scoreTrends.activity.reduce((a, b) => a + b, 0) / (scoreTrends.activity.length || 1)),
+          steps: weeklySteps,
+        };
+        const prev7 = dates.slice(-14, -7);
+        const prevWeekAvg = {
+          sleep: Math.round(prev7.map(d => dailyData[d]?.sleep?.score || 0).filter(s => s > 0).reduce((a, b) => a + b, 0) / (prev7.length || 1)),
+          readiness: Math.round(prev7.map(d => dailyData[d]?.readiness?.score || 0).filter(s => s > 0).reduce((a, b) => a + b, 0) / (prev7.length || 1)),
+          activity: Math.round(prev7.map(d => dailyData[d]?.activity?.score || 0).filter(s => s > 0).reduce((a, b) => a + b, 0) / (prev7.length || 1)),
+          steps: lastWeekSteps,
+        };
+        
+        // Generate insights
+        const insights: Array<{ type: string; message: string; severity: string }> = [];
+        
+        // Check for consecutive stress days
+        const stressDays = last7.filter(d => dailyData[d]?.stress?.daySummary === 'stressful').length;
+        if (stressDays >= 2) {
+          insights.push({
+            type: 'stress',
+            message: `${stressDays} high-stress days this week — prioritize recovery`,
+            severity: 'warning',
+          });
+        }
+        
+        // Check for low deep sleep
+        if (sleepArchitecture && sleepArchitecture.deep < 60) {
+          insights.push({
+            type: 'sleep',
+            message: 'Deep sleep below target (<1hr) — avoid caffeine/alcohol',
+            severity: 'warning',
+          });
+        }
+        
+        // Check HRV trend
+        if (hrvTrend.length >= 3) {
+          const recentHRV = hrvTrend.slice(-3);
+          const avgRecent = recentHRV.reduce((a, b) => a + b.hrv, 0) / recentHRV.length;
+          const olderHRV = hrvTrend.slice(0, -3);
+          if (olderHRV.length > 0) {
+            const avgOlder = olderHRV.reduce((a, b) => a + b.hrv, 0) / olderHRV.length;
+            if (avgRecent < avgOlder - 5) {
+              insights.push({
+                type: 'hrv',
+                message: 'HRV declining — possible overtraining or illness',
+                severity: 'warning',
+              });
+            }
+          }
+        }
+        
+        // Check late bedtimes correlating with low sleep
+        const lateBedtimes = last7.filter(d => {
+          const sessions = dailyData[d]?.sleepSessions || [];
+          const main = sessions.find((s: any) => s.totalSleepDuration?.totalMinutes > 60);
+          if (!main) return false;
+          const bedtime = new Date(main.bedtimeStart);
+          return bedtime.getHours() >= 1 && bedtime.getHours() < 12; // After 1am
+        }).length;
+        if (lateBedtimes >= 3) {
+          insights.push({
+            type: 'pattern',
+            message: `${lateBedtimes} late nights this week — earlier bedtimes could help`,
+            severity: 'info',
+          });
+        }
+        
+        return {
+          lastUpdated: data.lastUpdated,
+          latestScores,
+          scoreTrends,
+          sleepArchitecture,
+          sleepDebt,
+          hrvTrend,
+          stressBalance,
+          stepsProgress,
+          weeklyComparison: { current: currentWeekAvg, previous: prevWeekAvg },
+          insights,
+        };
+      })(),
       mealPlan,
       frictionPoints,
       // New live data

@@ -365,6 +365,49 @@ export interface FinanceSummary {
   generated: string | null;
 }
 
+// Extended Health Data (for HealthWidgetV2)
+export interface HealthExtended {
+  lastUpdated: string;
+  latestScores: {
+    sleep: number;
+    readiness: number;
+    activity: number;
+  };
+  scoreTrends: {
+    sleep: number[];
+    readiness: number[];
+    activity: number[];
+  };
+  sleepArchitecture: {
+    deep: number;
+    rem: number;
+    light: number;
+    total: number;
+  } | null;
+  sleepDebt: number; // minutes behind/ahead of 8hr target this week
+  hrvTrend: Array<{ date: string; hrv: number }>;
+  stressBalance: {
+    stressMinutes: number;
+    recoveryMinutes: number;
+    daySummary: string;
+  } | null;
+  stepsProgress: {
+    today: number;
+    target: number;
+    weeklyTotal: number;
+    lastWeekTotal: number;
+  } | null;
+  weeklyComparison: {
+    current: { sleep: number; readiness: number; activity: number; steps: number };
+    previous: { sleep: number; readiness: number; activity: number; steps: number };
+  } | null;
+  insights: Array<{
+    type: string;
+    message: string;
+    severity: string;
+  }>;
+}
+
 // Extended Finance Data (for FinanceWidgetV2)
 export interface FinanceExtended {
   netWorthHistory: Array<{
