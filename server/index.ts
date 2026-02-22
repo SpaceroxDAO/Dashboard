@@ -1717,8 +1717,8 @@ app.get('/api/dashboard', async (req, res) => {
       peopleTracker, jobPipeline, calendarEvents, insightsData,
       socialBattery, streaksData, cronHealth, currentMode,
       ideasData, tokenStatusContent, billsContent,
-      netWorthHistory, aiCostHistory, spendingAlerts, bankBalances,
       ouraData,
+      netWorthHistory, aiCostHistory, spendingAlerts, bankBalances,
       mealPlanContent, frictionContent,
       // Crons, goals, missions, quick actions (also read below for re-use)
       , , , ,
