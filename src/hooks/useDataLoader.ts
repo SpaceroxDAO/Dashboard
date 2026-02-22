@@ -28,6 +28,7 @@ import {
   tokenStatusAtom,
   billsAtom,
   financeSummaryAtom,
+  financeExtendedAtom,
   checkpointAtom,
   kiraCheckpointAtom,
   kiraCronHealthAtom,
@@ -114,6 +115,7 @@ export function useDataLoader() {
   const [, setTokenStatus] = useAtom(tokenStatusAtom);
   const [, setBills] = useAtom(billsAtom);
   const [, setFinanceSummary] = useAtom(financeSummaryAtom);
+  const [, setFinanceExtended] = useAtom(financeExtendedAtom);
   const [, setCheckpoint] = useAtom(checkpointAtom);
   const [, setKiraCheckpoint] = useAtom(kiraCheckpointAtom);
   const [, setKiraCronHealth] = useAtom(kiraCronHealthAtom);
@@ -233,6 +235,7 @@ export function useDataLoader() {
         setTokenStatus(finnData.tokenStatus);
         setBills(finnData.bills || []);
         setFinanceSummary(finnData.financeSummary || null);
+        setFinanceExtended(finnData.financeExtended || null);
         setMealPlan(finnData.mealPlan);
         setFrictionPoints(finnData.frictionPoints || []);
       }
@@ -382,7 +385,7 @@ export function useDataLoader() {
       loadingRef.current = false;
       setIsRefreshing(false);
     }
-  }, [setAgents, setAllMemoryCategories, setAllDNACategories, setAllCrons, setAllSkills, setHealthData, setAllGoals, setAllTodos, setAllMissions, setTimelineEvents, setQuickActions, setConnectionStatus, setLastUpdated, setIsRefreshing, setFinanceSummary, setPeopleTracker, setJobPipeline, setCalendarEvents, setInsightsData, setSocialBattery, setHabitStreaks, setCronHealth, setCurrentMode, setIdeas, setTokenStatus, setBills, setCheckpoint, setKiraCheckpoint, setKiraCronHealth, setMealPlan, setFrictionPoints, setFinnSupervision, setSystemMonitoring, setKiraReflections, kanbanDirty, kanbanDragging]);
+  }, [setAgents, setAllMemoryCategories, setAllDNACategories, setAllCrons, setAllSkills, setHealthData, setAllGoals, setAllTodos, setAllMissions, setTimelineEvents, setQuickActions, setConnectionStatus, setLastUpdated, setIsRefreshing, setFinanceSummary, setFinanceExtended, setPeopleTracker, setJobPipeline, setCalendarEvents, setInsightsData, setSocialBattery, setHabitStreaks, setCronHealth, setCurrentMode, setIdeas, setTokenStatus, setBills, setCheckpoint, setKiraCheckpoint, setKiraCronHealth, setMealPlan, setFrictionPoints, setFinnSupervision, setSystemMonitoring, setKiraReflections, kanbanDirty, kanbanDragging]);
 
   /** Seed atoms with empty data when API is offline */
   function seedMockData() {

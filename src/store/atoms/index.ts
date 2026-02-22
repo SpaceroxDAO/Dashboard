@@ -199,6 +199,10 @@ export const billsAtom = atom<Bill[]>([]);
 // Finance Summary
 export const financeSummaryAtom = atom<FinanceSummary | null>(null);
 
+// Extended Finance Data (for FinanceWidgetV2)
+import type { FinanceExtended } from '@/types';
+export const financeExtendedAtom = atom<FinanceExtended | null>(null);
+
 // Checkpoint (keyed by agent)
 export const checkpointAtom = atom<CheckpointData | null>(null);
 export const kiraCheckpointAtom = atom<CheckpointData | null>(null);

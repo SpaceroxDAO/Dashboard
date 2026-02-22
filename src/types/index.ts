@@ -365,6 +365,38 @@ export interface FinanceSummary {
   generated: string | null;
 }
 
+// Extended Finance Data (for FinanceWidgetV2)
+export interface FinanceExtended {
+  netWorthHistory: Array<{
+    date: string;
+    netWorth: number;
+    assets?: number;
+    liabilities?: number;
+  }>;
+  creditCard: {
+    balance: number;
+    minPayment: number;
+    dueDate: string;
+    creditScore: number;
+  } | null;
+  subscriptionsByCategory: Record<string, number>;
+  aiCosts: {
+    weekTotal: number;
+    monthTotal: number;
+    byModel: Record<string, number>;
+  } | null;
+  alerts: Array<{
+    id: string;
+    type: string;
+    severity: string;
+    title: string;
+    message: string;
+    monthlyImpact: number;
+    annualImpact: number;
+    action: string;
+  }>;
+}
+
 // Checkpoint Types
 export interface CheckpointData {
   content: string;

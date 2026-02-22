@@ -8,7 +8,7 @@ import {
   JobPipeline,
   PeopleWidget,
   HabitsWidget,
-  FinanceWidget,
+  FinanceWidgetV2,
 } from '@/components/dashboard';
 import { latestHealthAtom, quickActionsAtom, addToastAtom } from '@/store/atoms';
 import { useDataLoader } from '@/hooks';
@@ -41,7 +41,7 @@ export function PersonalPage() {
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <HealthSummary data={healthData} />
-          <FinanceWidget />
+          <FinanceWidgetV2 />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">

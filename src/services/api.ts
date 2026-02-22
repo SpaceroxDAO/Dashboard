@@ -162,6 +162,13 @@ export interface DashboardDataResponse {
   tokenStatus: TokenStatus | null;
   bills: Bill[];
   financeSummary: { weeklySpend: number; monthlyProjection: number; subscriptionsBurn: number; aiCostsWeek: number; generated: string | null } | null;
+  financeExtended: {
+    netWorthHistory: Array<{ date: string; netWorth: number; assets?: number; liabilities?: number }>;
+    creditCard: { balance: number; minPayment: number; dueDate: string; creditScore: number } | null;
+    subscriptionsByCategory: Record<string, number>;
+    aiCosts: { weekTotal: number; monthTotal: number; byModel: Record<string, number> } | null;
+    alerts: Array<{ id: string; type: string; severity: string; title: string; message: string; monthlyImpact: number; annualImpact: number; action: string }>;
+  } | null;
   mealPlan: MealPlan | null;
   frictionPoints: FrictionPoint[];
   // New live data

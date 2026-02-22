@@ -1176,6 +1176,109 @@ if ($latest) { Get-Content $latest.FullName | Select-Object -Last 20 }
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
+// 3b. REST FEED ENDPOINT — Return recent feed events as JSON (for Kira cron)
+// ══════════════════════════════════════════════════════════════════════════════
+
+router.get('/api/feed/recent', async (req: Request, res: Response) => {
+  try {
+    const agent = getAgentFromReq(req);
+    const limit = Math.min(parseInt((req.query.limit as string) || '30', 10), 100);
+    const minutes = Math.min(parseInt((req.query.minutes as string) || '60', 10), 1440);
+    const cutoff = new Date(Date.now() - minutes * 60 * 1000);
+
+    const events: FeedEvent[] = [];
+
+    if (agent === 'finn') {
+      // Read from Finn's local OpenClaw session files
+      const dirPath = FINN_SESSIONS_PATH;
+      try {
+        const files = await fs.readdir(dirPath);
+        const jsonlFiles = files.filter(f => f.endsWith('.jsonl'));
+
+        // Stat and sort by mtime, take most recent files
+        const withStats = await Promise.all(
+          jsonlFiles.map(async f => {
+            const fPath = path.join(dirPath, f);
+            const fStat = await fs.stat(fPath);
+            return { f, fPath, mtimeMs: fStat.mtimeMs };
+          })
+        );
+        withStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+        // Read from the 5 most recently modified session files
+        for (const { f, fPath } of withStats.slice(0, 5)) {
+          const content = await fs.readFile(fPath, 'utf-8');
+          const lines = content.trim().split('\n');
+          for (const line of lines) {
+            const parsed = parseFeedEvent(line, f.replace('.jsonl', ''), 'openclaw');
+            if (!parsed) continue;
+            for (const evt of parsed) {
+              if (evt.timestamp && new Date(evt.timestamp) >= cutoff) {
+                events.push(evt);
+              }
+            }
+          }
+        }
+      } catch { /* sessions dir not found */ }
+    } else {
+      // Kira: read via SSH
+      try {
+        const psScript = `
+$dir = '${KIRA_SESSIONS_PATH}'
+Get-ChildItem $dir -Filter '*.jsonl' | Sort-Object LastWriteTime -Descending | Select-Object -First 5 | ForEach-Object {
+  Get-Content $_.FullName | Select-Object -Last 50
+}
+`.trim();
+        const raw = await sshPowerShell(psScript);
+        if (raw) {
+          const lines = raw.split('\n').filter(Boolean);
+          for (const line of lines) {
+            const parsed = parseFeedEvent(line, 'kira', 'openclaw');
+            if (!parsed) continue;
+            for (const evt of parsed) {
+              if (evt.timestamp && new Date(evt.timestamp) >= cutoff) {
+                events.push(evt);
+              }
+            }
+          }
+        }
+      } catch { /* SSH error */ }
+    }
+
+    // Sort by timestamp and apply limit
+    events.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    const trimmed = events.slice(-limit);
+
+    // Compute summary stats for quick consumption
+    const errorCount = trimmed.filter(e => e.type === 'tool_result' && e.toolStatus === 'error').length;
+    const toolCallCount = trimmed.filter(e => e.type === 'tool_call').length;
+    const userMsgCount = trimmed.filter(e => e.type === 'user').length;
+    const assistantMsgCount = trimmed.filter(e => e.type === 'assistant').length;
+    const compactionCount = trimmed.filter(e => e.type === 'compaction').length;
+
+    res.json({
+      agent,
+      eventCount: trimmed.length,
+      timeRange: {
+        from: trimmed[0]?.timestamp || null,
+        to: trimmed[trimmed.length - 1]?.timestamp || null,
+      },
+      summary: {
+        userMessages: userMsgCount,
+        assistantMessages: assistantMsgCount,
+        toolCalls: toolCallCount,
+        toolErrors: errorCount,
+        compactions: compactionCount,
+      },
+      events: trimmed,
+    });
+  } catch (error) {
+    console.error('Feed recent error:', error);
+    res.status(500).json({ error: 'Failed to get recent feed events' });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
 // 4. ACTIVITY HEATMAP — Parse session timestamps
 // ══════════════════════════════════════════════════════════════════════════════
 

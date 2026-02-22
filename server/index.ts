@@ -1717,6 +1717,7 @@ app.get('/api/dashboard', async (req, res) => {
       peopleTracker, jobPipeline, calendarEvents, insightsData,
       socialBattery, streaksData, cronHealth, currentMode,
       ideasData, tokenStatusContent, billsContent,
+      netWorthHistory, aiCostHistory, spendingAlerts, bankBalances,
       mealPlanContent, frictionContent,
       // Crons, goals, missions, quick actions (also read below for re-use)
       , , , ,
@@ -1742,6 +1743,10 @@ app.get('/api/dashboard', async (req, res) => {
       readJsonFile(path.join(MEMORY_PATH, 'ideas.json')),
       readMdFile(path.join(MEMORY_PATH, 'system', 'token-status.md')),
       readJsonFile(path.join(MEMORY_PATH, 'finance', 'daily-recap.json')), // Finance recap data
+      readJsonFile(path.join(MEMORY_PATH, 'finance', 'net-worth-history.json')), // Net worth tracking
+      readJsonFile(path.join(MEMORY_PATH, 'finance', 'ai-cost-history.json')), // AI cost tracking
+      readJsonFile(path.join(MEMORY_PATH, 'finance', 'spending-alerts.json')), // Spending alerts
+      readJsonFile(path.join(MEMORY_PATH, 'finance', 'bank-balances.json')), // Bank balances
       readMdFile(path.join(MEMORY_PATH, 'meal-plan-current.md')),
       readMdFile(path.join(MEMORY_PATH, 'friction-points.md')),
       // Crons, goals, missions, quick actions
@@ -1921,6 +1926,22 @@ app.get('/api/dashboard', async (req, res) => {
         aiCostsWeek: (billsContent as any).summary?.aiCostsWeek || 0,
         generated: (billsContent as any).generated || null,
       } : null,
+      financeExtended: {
+        netWorthHistory: (netWorthHistory as any)?.entries || [],
+        creditCard: bankBalances ? {
+          balance: (bankBalances as any)?.banks?.capitalone?.accounts?.find((a: any) => a.balance < 0)?.balance || 0,
+          minPayment: (bankBalances as any)?.banks?.capitalone?.min_payment_due || 0,
+          dueDate: (bankBalances as any)?.banks?.capitalone?.payment_due_date || '',
+          creditScore: (bankBalances as any)?.banks?.capitalone?.fico_score || 0,
+        } : null,
+        subscriptionsByCategory: (billsContent as any)?.subscriptions?.byCategory || {},
+        aiCosts: (aiCostHistory as any)?.entries?.[0] ? {
+          weekTotal: (aiCostHistory as any).entries[0].weeklyTotal || 0,
+          monthTotal: (aiCostHistory as any).entries[0].monthlyTotal || 0,
+          byModel: (aiCostHistory as any).entries[0].byModel || {},
+        } : null,
+        alerts: (spendingAlerts as any)?.alerts || [],
+      },
       mealPlan,
       frictionPoints,
       // New live data

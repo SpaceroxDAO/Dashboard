@@ -13,3 +13,4 @@ export { FinnSupervisionPanel } from './FinnSupervisionPanel';
 export { SystemMonitoringPanel } from './SystemMonitoringPanel';
 export { KiraReflectionsPanel } from './KiraReflectionsPanel';
 export { FinanceWidget } from './FinanceWidget';
+export { FinanceWidgetV2 } from './FinanceWidgetV2';
