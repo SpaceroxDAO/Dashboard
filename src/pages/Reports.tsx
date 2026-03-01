@@ -72,8 +72,18 @@ interface Report {
   markdownPath?: string;
 }
 
+interface VisualReport {
+  id: string;
+  name: string;
+  filename: string;
+  url: string;
+  createdAt: string;
+  size: number;
+}
+
 export function ReportsPage() {
   const [reports, setReports] = useState<Report[]>([]);
+  const [visualReports, setVisualReports] = useState<VisualReport[]>([]);
   const [loading, setLoading] = useState(true);
   const [showNewReport, setShowNewReport] = useState(false);
   const [selectedReport, setSelectedReport] = useState<Report | null>(null);
@@ -83,6 +93,7 @@ export function ReportsPage() {
 
   useEffect(() => {
     fetchReports();
+    fetchVisualReports();
   }, []);
 
   const fetchReports = async () => {
@@ -96,6 +107,18 @@ export function ReportsPage() {
       console.error('Failed to fetch reports:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchVisualReports = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/visual-reports`);
+      if (res.ok) {
+        const data = await res.json();
+        setVisualReports(data.reports || []);
+      }
+    } catch (error) {
+      console.error('Failed to fetch visual reports:', error);
     }
   };
 
@@ -314,6 +337,37 @@ export function ReportsPage() {
           </div>
           <Button variant="primary" size="sm" icon={<Plus className="w-3.5 h-3.5" />} onClick={() => setShowNewReport(true)}>New Report</Button>
         </div>
+
+        {/* Visual Reports Section */}
+        {visualReports.length > 0 && (
+          <div className="space-y-2">
+            <h2 className="text-xs font-semibold text-text-dim uppercase tracking-wide">Visual Reports</h2>
+            <div className="grid gap-2">
+              {visualReports.map((report) => (
+                <a
+                  key={report.id}
+                  href={`${API_BASE}${report.url}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="p-3 rounded-lg bg-gradient-to-r from-signal-primary/10 to-purple-500/10 border border-signal-primary/30 hover:border-signal-primary/60 transition-all group"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-lg bg-signal-primary/20 flex items-center justify-center">
+                        <FileText className="w-4 h-4 text-signal-primary" />
+                      </div>
+                      <div>
+                        <h3 className="text-xs font-semibold text-text-bright group-hover:text-signal-primary transition-colors">{report.name}</h3>
+                        <p className="text-[10px] text-text-dim">{formatDate(report.createdAt)} • {(report.size / 1024).toFixed(1)} KB</p>
+                      </div>
+                    </div>
+                    <ExternalLink className="w-4 h-4 text-text-dim group-hover:text-signal-primary transition-colors" />
+                  </div>
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
 
         {showNewReport && (
           <div className="p-3 rounded-xl bg-surface-elevated border border-[var(--color-border-panel)] space-y-3">
