@@ -1,21 +1,229 @@
-import { useState } from 'react';
-import { FileText, Plus, Clock, CheckCircle, Loader2 } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { FileText, Plus, Clock, CheckCircle, Loader2, ChevronRight, AlertCircle } from 'lucide-react';
 import { PageContainer } from '@/components/layout';
 import { Button } from '@/components/ui';
 
+const API_BASE = import.meta.env.VITE_API_URL || (
+  import.meta.env.PROD
+    ? 'https://lumes-virtual-machine.tailf846b2.ts.net/dashboard-api'
+    : 'http://localhost:3001'
+);
+
+interface ReportContent {
+  unreadCount?: number;
+  newInMails?: number;
+  activeThreads?: number;
+  jobAlerts?: number;
+  directOutreach?: Array<{from: string; role: string; company: string; date: string; unread: boolean}>;
+  jobAlertsList?: Array<{title: string; company: string; date: string}>;
+  indeedMatches?: Array<{title: string; company: string; salary?: string; location?: string; date: string}>;
+  interviews?: Array<{company: string; role: string; date: string; status: string}>;
+  actionItems?: string[];
+}
+
 interface Report {
-  id: string; title: string; type: 'adhoc' | 'scheduled'; status: 'pending' | 'running' | 'complete';
-  createdAt: string; schedule?: string; summary?: string;
+  id: string;
+  title: string;
+  type: 'adhoc' | 'scheduled';
+  status: 'pending' | 'running' | 'complete';
+  createdAt: string;
+  schedule?: string;
+  summary?: string;
+  content?: ReportContent;
+  markdownPath?: string;
 }
 
 export function ReportsPage() {
-  const [reports] = useState<Report[]>([]);
+  const [reports, setReports] = useState<Report[]>([]);
+  const [loading, setLoading] = useState(true);
   const [showNewReport, setShowNewReport] = useState(false);
+  const [selectedReport, setSelectedReport] = useState<Report | null>(null);
   const [newTitle, setNewTitle] = useState('');
   const [newType, setNewType] = useState<'adhoc' | 'scheduled'>('adhoc');
   const [newPrompt, setNewPrompt] = useState('');
 
-  const handleCreateReport = () => { setShowNewReport(false); setNewTitle(''); setNewPrompt(''); };
+  useEffect(() => {
+    fetchReports();
+  }, []);
+
+  const fetchReports = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/reports`);
+      if (res.ok) {
+        const data = await res.json();
+        setReports(data);
+      }
+    } catch (error) {
+      console.error('Failed to fetch reports:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreateReport = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/reports`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: newTitle, type: newType, prompt: newPrompt }),
+      });
+      if (res.ok) {
+        await fetchReports();
+        setShowNewReport(false);
+        setNewTitle('');
+        setNewPrompt('');
+      }
+    } catch (error) {
+      console.error('Failed to create report:', error);
+    }
+  };
+
+  const formatDate = (dateStr: string) => {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+  };
+
+  if (loading) {
+    return (
+      <PageContainer>
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="w-6 h-6 animate-spin text-signal-primary" />
+        </div>
+      </PageContainer>
+    );
+  }
+
+  if (selectedReport) {
+    const content = selectedReport.content;
+    return (
+      <PageContainer>
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <button onClick={() => setSelectedReport(null)} className="text-text-dim hover:text-text-bright">
+              <ChevronRight className="w-4 h-4 rotate-180" />
+            </button>
+            <FileText className="w-5 h-5 text-signal-primary" />
+            <h1 className="text-lg font-bold text-text-bright">{selectedReport.title}</h1>
+          </div>
+
+          <div className="text-[10px] text-text-dim">{formatDate(selectedReport.createdAt)}</div>
+
+          {content && (
+            <div className="space-y-4">
+              {/* Summary Stats */}
+              <div className="grid grid-cols-4 gap-2">
+                <div className="p-2 rounded-lg bg-surface-elevated border border-[var(--color-border-panel)]">
+                  <div className="text-lg font-bold text-signal-alert">{content.unreadCount || 0}</div>
+                  <div className="text-[10px] text-text-dim">Unread</div>
+                </div>
+                <div className="p-2 rounded-lg bg-surface-elevated border border-[var(--color-border-panel)]">
+                  <div className="text-lg font-bold text-signal-primary">{content.newInMails || 0}</div>
+                  <div className="text-[10px] text-text-dim">InMails</div>
+                </div>
+                <div className="p-2 rounded-lg bg-surface-elevated border border-[var(--color-border-panel)]">
+                  <div className="text-lg font-bold text-signal-online">{content.activeThreads || 0}</div>
+                  <div className="text-[10px] text-text-dim">Active</div>
+                </div>
+                <div className="p-2 rounded-lg bg-surface-elevated border border-[var(--color-border-panel)]">
+                  <div className="text-lg font-bold text-text-bright">{content.jobAlerts || 0}</div>
+                  <div className="text-[10px] text-text-dim">Alerts</div>
+                </div>
+              </div>
+
+              {/* Action Items */}
+              {content.actionItems && content.actionItems.length > 0 && (
+                <div className="p-3 rounded-lg bg-signal-alert/10 border border-signal-alert/30">
+                  <div className="flex items-center gap-1.5 mb-2">
+                    <AlertCircle className="w-4 h-4 text-signal-alert" />
+                    <h3 className="text-xs font-semibold text-signal-alert">Action Required</h3>
+                  </div>
+                  <ul className="space-y-1">
+                    {content.actionItems.map((item, i) => (
+                      <li key={i} className="text-xs text-text-bright flex items-start gap-1.5">
+                        <span className="text-signal-alert">•</span>
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Direct Outreach */}
+              {content.directOutreach && content.directOutreach.length > 0 && (
+                <div className="p-3 rounded-lg bg-surface-elevated border border-[var(--color-border-panel)]">
+                  <h3 className="text-xs font-semibold text-text-bright mb-2">Direct Recruiter Outreach</h3>
+                  <div className="space-y-1.5">
+                    {content.directOutreach.map((item, i) => (
+                      <div key={i} className={`flex items-center justify-between text-xs ${item.unread ? 'text-text-bright' : 'text-text-muted'}`}>
+                        <div className="flex items-center gap-2">
+                          {item.unread && <span className="w-1.5 h-1.5 rounded-full bg-signal-alert"></span>}
+                          <span className="font-medium">{item.from}</span>
+                          <span className="text-text-dim">—</span>
+                          <span>{item.role}</span>
+                        </div>
+                        <span className="text-[10px] text-text-dim">{item.company}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Job Alerts */}
+              {content.jobAlertsList && content.jobAlertsList.length > 0 && (
+                <div className="p-3 rounded-lg bg-surface-elevated border border-[var(--color-border-panel)]">
+                  <h3 className="text-xs font-semibold text-text-bright mb-2">Job Alerts</h3>
+                  <div className="space-y-1.5">
+                    {content.jobAlertsList.map((item, i) => (
+                      <div key={i} className="flex items-center justify-between text-xs text-text-muted">
+                        <span>{item.title}</span>
+                        <span className="text-[10px] text-text-dim">{item.company}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Indeed Matches */}
+              {content.indeedMatches && content.indeedMatches.length > 0 && (
+                <div className="p-3 rounded-lg bg-surface-elevated border border-[var(--color-border-panel)]">
+                  <h3 className="text-xs font-semibold text-text-bright mb-2">Indeed Matches</h3>
+                  <div className="space-y-1.5">
+                    {content.indeedMatches.map((item, i) => (
+                      <div key={i} className="flex items-center justify-between text-xs text-text-muted">
+                        <div>
+                          <span>{item.title}</span>
+                          <span className="text-text-dim"> @ {item.company}</span>
+                        </div>
+                        {item.salary && <span className="text-signal-online text-[10px]">{item.salary}</span>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Interviews */}
+              {content.interviews && content.interviews.length > 0 && (
+                <div className="p-3 rounded-lg bg-surface-elevated border border-[var(--color-border-panel)]">
+                  <h3 className="text-xs font-semibold text-text-bright mb-2">Interviews</h3>
+                  <div className="space-y-1.5">
+                    {content.interviews.map((item, i) => (
+                      <div key={i} className="flex items-center justify-between text-xs text-text-muted">
+                        <div>
+                          <span className="font-medium">{item.company}</span>
+                          <span className="text-text-dim"> — {item.role}</span>
+                        </div>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-base">{item.status}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </PageContainer>
+    );
+  }
 
   return (
     <PageContainer>
@@ -33,7 +241,7 @@ export function ReportsPage() {
             <h2 className="text-xs font-semibold text-text-bright">Request a Report</h2>
             <div>
               <label className="block text-[10px] text-text-dim mb-0.5">Title</label>
-              <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="e.g., Weekly Launch Metrics"
+              <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="e.g., Weekly Job Search Summary"
                 className="w-full bg-surface-base text-xs text-text-bright placeholder-text-dim px-2.5 py-1.5 rounded-lg border border-[var(--color-border-panel)] outline-none focus:border-signal-primary" />
             </div>
             <div>
@@ -60,11 +268,16 @@ export function ReportsPage() {
         {reports.length > 0 ? (
           <div className="space-y-1.5">
             {reports.map((report) => (
-              <div key={report.id} className="p-2.5 rounded-lg bg-surface-elevated border border-[var(--color-border-panel)] hover:border-[var(--color-border-bright)] transition-colors">
+              <div 
+                key={report.id} 
+                onClick={() => setSelectedReport(report)}
+                className="p-2.5 rounded-lg bg-surface-elevated border border-[var(--color-border-panel)] hover:border-[var(--color-border-bright)] transition-colors cursor-pointer"
+              >
                 <div className="flex items-start justify-between">
                   <div>
                     <h3 className="text-xs font-semibold text-text-bright">{report.title}</h3>
                     <p className="text-[10px] text-text-dim mt-0.5">{report.summary || 'Processing...'}</p>
+                    <p className="text-[10px] text-text-dim mt-1">{formatDate(report.createdAt)}</p>
                   </div>
                   <div className="flex items-center gap-1.5">
                     {report.status === 'complete' && <CheckCircle className="w-3.5 h-3.5 text-signal-online" />}

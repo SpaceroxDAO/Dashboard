@@ -2946,6 +2946,74 @@ async function buildCategory(id: string, name: string, type: string, filePaths: 
   };
 }
 
+// ─── Reports API ───
+const REPORTS_PATH = path.join(MEMORY_PATH, 'reports');
+
+app.get('/api/reports', async (req, res) => {
+  try {
+    const files = await fs.readdir(REPORTS_PATH).catch(() => []);
+    const reports = await Promise.all(
+      files.filter(f => f.endsWith('.json')).map(async (file) => {
+        try {
+          const content = await fs.readFile(path.join(REPORTS_PATH, file), 'utf-8');
+          return JSON.parse(content);
+        } catch {
+          return null;
+        }
+      })
+    );
+    res.json(reports.filter(Boolean).sort((a, b) => 
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    ));
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch reports' });
+  }
+});
+
+app.get('/api/reports/:reportId', async (req, res) => {
+  try {
+    const { reportId } = req.params;
+    const files = await fs.readdir(REPORTS_PATH).catch(() => []);
+    for (const file of files) {
+      if (file.endsWith('.json')) {
+        const content = await fs.readFile(path.join(REPORTS_PATH, file), 'utf-8');
+        const report = JSON.parse(content);
+        if (report.id === reportId) {
+          return res.json(report);
+        }
+      }
+    }
+    res.status(404).json({ error: 'Report not found' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch report' });
+  }
+});
+
+app.post('/api/reports', async (req, res) => {
+  try {
+    const { title, type, prompt, schedule } = req.body;
+    const id = `report-${Date.now()}`;
+    const report = {
+      id,
+      title,
+      type: type || 'adhoc',
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+      schedule,
+      prompt,
+      summary: 'Processing...',
+    };
+    await fs.mkdir(REPORTS_PATH, { recursive: true });
+    await fs.writeFile(
+      path.join(REPORTS_PATH, `${id}.json`),
+      JSON.stringify(report, null, 2)
+    );
+    res.json(report);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to create report' });
+  }
+});
+
 // ─── Monitoring routes (costs, health, SSE, heatmap, services) ───
 app.use(monitoringRouter);
 
