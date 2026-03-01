@@ -2946,6 +2946,41 @@ async function buildCategory(id: string, name: string, type: string, filePaths: 
   };
 }
 
+// ─── Visual Reports (HTML diagrams) ───
+const VISUAL_REPORTS_PATH = path.join(os.homedir(), '.agent', 'diagrams');
+
+// Serve visual reports as static files
+app.use('/reports', express.static(VISUAL_REPORTS_PATH));
+
+// List available visual reports
+app.get('/api/visual-reports', async (req, res) => {
+  try {
+    await fs.mkdir(VISUAL_REPORTS_PATH, { recursive: true });
+    const files = await fs.readdir(VISUAL_REPORTS_PATH);
+    const reports = await Promise.all(
+      files.filter(f => f.endsWith('.html')).map(async (file) => {
+        const stats = await fs.stat(path.join(VISUAL_REPORTS_PATH, file));
+        const nameMatch = file.match(/finn-weekly-(\d{4}-\d{2}-\d{2})\.html/);
+        return {
+          id: file.replace('.html', ''),
+          name: nameMatch ? `Weekly Report - ${nameMatch[1]}` : file.replace('.html', ''),
+          filename: file,
+          url: `/reports/${file}`,
+          createdAt: stats.mtime,
+          size: stats.size,
+        };
+      })
+    );
+    res.json({ 
+      reports: reports.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+      baseUrl: `http://localhost:${PORT}/reports`,
+    });
+  } catch (error) {
+    console.error('Visual reports error:', error);
+    res.status(500).json({ error: 'Failed to list visual reports' });
+  }
+});
+
 // ─── Reports API ───
 const REPORTS_PATH = path.join(MEMORY_PATH, 'reports');
 
