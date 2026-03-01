@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { FileText, Plus, Clock, CheckCircle, Loader2, ChevronRight, AlertCircle } from 'lucide-react';
+import { FileText, Plus, Clock, CheckCircle, Loader2, ChevronRight, AlertCircle, ExternalLink, Mail } from 'lucide-react';
 import { PageContainer } from '@/components/layout';
 import { Button } from '@/components/ui';
 
@@ -9,15 +9,54 @@ const API_BASE = import.meta.env.VITE_API_URL || (
     : 'http://localhost:3001'
 );
 
+interface OutreachItem {
+  from: string;
+  role: string;
+  company: string;
+  date: string;
+  unread: boolean;
+  emailId?: string;
+  gmailLink?: string;
+  linkedinLink?: string;
+}
+
+interface JobAlert {
+  title: string;
+  company: string;
+  date: string;
+  emailId?: string;
+  gmailLink?: string;
+  jobLink?: string;
+}
+
+interface IndeedMatch {
+  title: string;
+  company: string;
+  salary?: string;
+  location?: string;
+  date: string;
+  emailId?: string;
+  gmailLink?: string;
+}
+
+interface Interview {
+  company: string;
+  role: string;
+  date: string;
+  status: string;
+  emailId?: string;
+  gmailLink?: string;
+}
+
 interface ReportContent {
   unreadCount?: number;
   newInMails?: number;
   activeThreads?: number;
   jobAlerts?: number;
-  directOutreach?: Array<{from: string; role: string; company: string; date: string; unread: boolean}>;
-  jobAlertsList?: Array<{title: string; company: string; date: string}>;
-  indeedMatches?: Array<{title: string; company: string; salary?: string; location?: string; date: string}>;
-  interviews?: Array<{company: string; role: string; date: string; status: string}>;
+  directOutreach?: OutreachItem[];
+  jobAlertsList?: JobAlert[];
+  indeedMatches?: IndeedMatch[];
+  interviews?: Interview[];
   actionItems?: string[];
 }
 
@@ -81,6 +120,22 @@ export function ReportsPage() {
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr);
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+  };
+
+  const LinkButton = ({ href, icon: Icon, label }: { href?: string; icon: any; label: string }) => {
+    if (!href) return null;
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded bg-signal-primary/20 text-signal-primary hover:bg-signal-primary/30 transition-colors"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Icon className="w-3 h-3" />
+        {label}
+      </a>
+    );
   };
 
   if (loading) {
@@ -152,16 +207,22 @@ export function ReportsPage() {
               {content.directOutreach && content.directOutreach.length > 0 && (
                 <div className="p-3 rounded-lg bg-surface-elevated border border-[var(--color-border-panel)]">
                   <h3 className="text-xs font-semibold text-text-bright mb-2">Direct Recruiter Outreach</h3>
-                  <div className="space-y-1.5">
+                  <div className="space-y-2">
                     {content.directOutreach.map((item, i) => (
-                      <div key={i} className={`flex items-center justify-between text-xs ${item.unread ? 'text-text-bright' : 'text-text-muted'}`}>
-                        <div className="flex items-center gap-2">
-                          {item.unread && <span className="w-1.5 h-1.5 rounded-full bg-signal-alert"></span>}
-                          <span className="font-medium">{item.from}</span>
-                          <span className="text-text-dim">—</span>
-                          <span>{item.role}</span>
+                      <div key={i} className={`p-2 rounded-lg ${item.unread ? 'bg-signal-alert/10 border border-signal-alert/20' : 'bg-surface-base'}`}>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              {item.unread && <span className="w-2 h-2 rounded-full bg-signal-alert flex-shrink-0"></span>}
+                              <span className="font-medium text-xs text-text-bright truncate">{item.from}</span>
+                            </div>
+                            <p className="text-[10px] text-text-muted mt-0.5">{item.role} @ {item.company}</p>
+                          </div>
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            <LinkButton href={item.gmailLink} icon={Mail} label="Email" />
+                            <LinkButton href={item.linkedinLink} icon={ExternalLink} label="LinkedIn" />
+                          </div>
                         </div>
-                        <span className="text-[10px] text-text-dim">{item.company}</span>
                       </div>
                     ))}
                   </div>
@@ -172,11 +233,19 @@ export function ReportsPage() {
               {content.jobAlertsList && content.jobAlertsList.length > 0 && (
                 <div className="p-3 rounded-lg bg-surface-elevated border border-[var(--color-border-panel)]">
                   <h3 className="text-xs font-semibold text-text-bright mb-2">Job Alerts</h3>
-                  <div className="space-y-1.5">
+                  <div className="space-y-2">
                     {content.jobAlertsList.map((item, i) => (
-                      <div key={i} className="flex items-center justify-between text-xs text-text-muted">
-                        <span>{item.title}</span>
-                        <span className="text-[10px] text-text-dim">{item.company}</span>
+                      <div key={i} className="p-2 rounded-lg bg-surface-base">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs text-text-bright truncate">{item.title}</p>
+                            <p className="text-[10px] text-text-dim">{item.company}</p>
+                          </div>
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            <LinkButton href={item.jobLink} icon={ExternalLink} label="Apply" />
+                            <LinkButton href={item.gmailLink} icon={Mail} label="Email" />
+                          </div>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -187,14 +256,19 @@ export function ReportsPage() {
               {content.indeedMatches && content.indeedMatches.length > 0 && (
                 <div className="p-3 rounded-lg bg-surface-elevated border border-[var(--color-border-panel)]">
                   <h3 className="text-xs font-semibold text-text-bright mb-2">Indeed Matches</h3>
-                  <div className="space-y-1.5">
+                  <div className="space-y-2">
                     {content.indeedMatches.map((item, i) => (
-                      <div key={i} className="flex items-center justify-between text-xs text-text-muted">
-                        <div>
-                          <span>{item.title}</span>
-                          <span className="text-text-dim"> @ {item.company}</span>
+                      <div key={i} className="p-2 rounded-lg bg-surface-base">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs text-text-bright truncate">{item.title}</p>
+                            <p className="text-[10px] text-text-dim">{item.company}</p>
+                            {item.salary && <p className="text-[10px] text-signal-online font-medium">{item.salary}</p>}
+                          </div>
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            <LinkButton href={item.gmailLink} icon={Mail} label="Email" />
+                          </div>
                         </div>
-                        {item.salary && <span className="text-signal-online text-[10px]">{item.salary}</span>}
                       </div>
                     ))}
                   </div>
@@ -205,14 +279,19 @@ export function ReportsPage() {
               {content.interviews && content.interviews.length > 0 && (
                 <div className="p-3 rounded-lg bg-surface-elevated border border-[var(--color-border-panel)]">
                   <h3 className="text-xs font-semibold text-text-bright mb-2">Interviews</h3>
-                  <div className="space-y-1.5">
+                  <div className="space-y-2">
                     {content.interviews.map((item, i) => (
-                      <div key={i} className="flex items-center justify-between text-xs text-text-muted">
-                        <div>
-                          <span className="font-medium">{item.company}</span>
-                          <span className="text-text-dim"> — {item.role}</span>
+                      <div key={i} className="p-2 rounded-lg bg-surface-base">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs text-text-bright">{item.company} — {item.role}</p>
+                            <p className="text-[10px] text-text-dim">{item.date}</p>
+                            <span className="inline-block mt-1 text-[10px] px-1.5 py-0.5 rounded bg-surface-elevated">{item.status}</span>
+                          </div>
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            <LinkButton href={item.gmailLink} icon={Mail} label="Email" />
+                          </div>
                         </div>
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-base">{item.status}</span>
                       </div>
                     ))}
                   </div>
