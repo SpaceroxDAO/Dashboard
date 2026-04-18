@@ -43,6 +43,17 @@ function agentOpenClawPath(agentId: string): string {
   return path.join(os.homedir(), '.openclaw');
 }
 
+// Chrome Private Network Access: must come BEFORE cors() to handle preflight
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Private-Network', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+  next();
+});
 app.use(cors());
 app.use(express.json());
 
