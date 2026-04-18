@@ -10,11 +10,10 @@ import fs from 'fs/promises';
 import { watch, type FSWatcher } from 'fs';
 import path from 'path';
 import os from 'os';
-import { exec, execFile } from 'child_process';
+import { exec } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
-const execFileAsync = promisify(execFile);
 
 const router = Router();
 
@@ -27,20 +26,21 @@ function yieldEventLoop(): Promise<void> {
 
 type AgentId = 'finn' | 'kira';
 
-const FINN_PROJECT_DIR_PREFIX = '-Users-lume';
-const KIRA_SSH_HOST = 'adami@100.117.33.89';
-const KIRA_SESSIONS_PATH = 'C:\\Users\\adami\\.openclaw\\agents\\kira\\sessions';
-const KIRA_SESSIONS_PATH_LEGACY = 'C:\\Users\\adami\\.openclaw\\agents\\agents\\kira\\sessions';
+const FINN_PROJECT_DIR_PREFIX = '-Users-adami';
 
-// Dedup concurrent SSH calls for the same endpoint
-const kiraInFlight = new Map<string, Promise<unknown>>();
-async function withKiraLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const existing = kiraInFlight.get(key);
-  if (existing) return existing as Promise<T>;
-  const promise = fn().finally(() => kiraInFlight.delete(key));
-  kiraInFlight.set(key, promise);
-  return promise;
-}
+// Agent workspace and session paths (both local on this Windows PC)
+const AGENT_CONFIG: Record<AgentId, { basePath: string; sessionsPath: string; sessionsPathLegacy?: string }> = {
+  finn: {
+    basePath: path.join(os.homedir(), 'finn'),
+    sessionsPath: path.join(os.homedir(), '.openclaw-finn', 'agents', 'finn', 'sessions'),
+  },
+  kira: {
+    basePath: path.join(os.homedir(), 'kira'),
+    sessionsPath: path.join(os.homedir(), '.openclaw', 'agents', 'kira', 'sessions'),
+    sessionsPathLegacy: path.join(os.homedir(), '.openclaw', 'agents', 'agents', 'kira', 'sessions'),
+  },
+};
+
 
 function isValidAgent(agent: unknown): agent is AgentId {
   return agent === 'finn' || agent === 'kira';
@@ -51,43 +51,16 @@ function getAgentFromReq(req: Request): AgentId {
   return isValidAgent(agent) ? agent : 'finn';
 }
 
-async function sshExec(command: string): Promise<string> {
-  const { stdout } = await execFileAsync('ssh', [
-    '-o', 'ConnectTimeout=5',
-    '-o', 'StrictHostKeyChecking=no',
-    '-o', 'BatchMode=yes',
-    KIRA_SSH_HOST,
-    command,
-  ], { timeout: 15000 });
-  return stdout;
+/** Return the sessions path(s) for an agent */
+function getSessionsPaths(agent: AgentId): string[] {
+  const config = AGENT_CONFIG[agent];
+  const paths = [config.sessionsPath];
+  if (config.sessionsPathLegacy) paths.push(config.sessionsPathLegacy);
+  return paths;
 }
 
-/** SSH ControlMaster — keeps a persistent connection to Kira's PC */
-const SSH_CONTROL_PATH = path.join(os.homedir(), '.ssh', 'controlmasters', 'kira-%r@%h:%p');
-
-/** Run a PowerShell script on Kira's PC via SSH using -EncodedCommand to avoid quoting issues with cmd.exe */
-async function sshPowerShell(script: string): Promise<string> {
-  // Encode as UTF-16LE base64 for PowerShell -EncodedCommand
-  const encoded = Buffer.from(script, 'utf16le').toString('base64');
-  const { stdout } = await execFileAsync('ssh', [
-    '-o', 'ConnectTimeout=5',
-    '-o', 'StrictHostKeyChecking=no',
-    '-o', 'BatchMode=yes',
-    '-o', `ControlMaster=auto`,
-    '-o', `ControlPath=${SSH_CONTROL_PATH}`,
-    '-o', 'ControlPersist=600',
-    KIRA_SSH_HOST,
-    `powershell -NoProfile -EncodedCommand ${encoded}`,
-  ], { timeout: 20000 });
-  // Strip CLIXML noise that PowerShell sometimes emits
-  const lines = stdout.split('\n').filter(l => !l.startsWith('#<') && !l.startsWith('<Objs') && !l.includes('</Objs>') && l.trim());
-  return lines.join('\n').trim();
-}
-
-/** Return project dir names filtered by agent. Kira has no JSONL sessions. */
+/** Return project dir names filtered by agent */
 async function getProjectDirsForAgent(agent: AgentId): Promise<string[]> {
-  if (agent === 'kira') return [];
-
   const allDirs = await fs.readdir(CLAUDE_PROJECTS_PATH).catch(() => []);
   return allDirs.filter(d => d.startsWith(FINN_PROJECT_DIR_PREFIX));
 }
@@ -95,8 +68,6 @@ async function getProjectDirsForAgent(agent: AgentId): Promise<string[]> {
 // ─── Paths ───
 
 const CLAUDE_PROJECTS_PATH = path.join(os.homedir(), '.claude', 'projects');
-const AGENTS_BASE_PATH = '/Users/lume/clawd';
-const FINN_SESSIONS_PATH = path.join(os.homedir(), '.openclaw', 'agents', 'main', 'sessions');
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 1. COST TRACKING — Parse JSONL session files for token usage
@@ -237,109 +208,26 @@ async function parseSessionFile(filePath: string): Promise<SessionCost | null> {
   }
 }
 
-async function computeKiraCosts(days: number = 30): Promise<CostSummary> {
-  const cacheKey = `kira-${days}`;
-  const cached = costCaches.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < 2 * 60_000) return cached.data;
-
-  return withKiraLock(cacheKey, async () => {
-    const psScript = `
-$dirs = @('${KIRA_SESSIONS_PATH}','${KIRA_SESSIONS_PATH_LEGACY}')
-$cutoff = (Get-Date).AddDays(-${days})
-$r = @()
-foreach ($dir in $dirs) {
-  Get-ChildItem $dir -Filter '*.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $cutoff } | ForEach-Object {
-    $first = Get-Content $_.FullName -TotalCount 1 | ConvertFrom-Json
-    $inp = 0; $out = 0; $msgs = 0; $model = 'unknown'; $last = ''
-    foreach ($line in (Get-Content $_.FullName)) {
-      try {
-        $obj = $line | ConvertFrom-Json
-        if ($obj.timestamp) { $last = $obj.timestamp }
-        if ($obj.type -eq 'message' -and $obj.message.role -eq 'assistant' -and $obj.message.usage) {
-          $msgs++; $inp += $obj.message.usage.input; $out += $obj.message.usage.output
-        }
-        if ($obj.type -eq 'model_change') { $model = $obj.modelId }
-      } catch {}
-    }
-    if ($msgs -gt 0) {
-      $r += @{ id=$first.id; ts=$first.timestamp; last=$last; model=$model; inp=$inp; out=$out; msgs=$msgs }
-    }
-  }
-}
-$r | ConvertTo-Json -Compress
-`.trim();
-
+/** Collect session files from all sessions paths for an agent, filtered by cutoff */
+async function collectSessionFiles(agent: AgentId, cutoffMs: number): Promise<string[]> {
+  const allFiles: string[] = [];
+  for (const dirPath of getSessionsPaths(agent)) {
     try {
-      const raw = await sshPowerShell(psScript);
-      if (!raw || raw === 'null') {
-        costCaches.set(cacheKey, { data: ZERO_COST_SUMMARY, timestamp: Date.now() });
-        return ZERO_COST_SUMMARY;
+      const files = await fs.readdir(dirPath);
+      for (const f of files) {
+        if (!f.endsWith('.jsonl')) continue;
+        const fPath = path.join(dirPath, f);
+        const fStat = await fs.stat(fPath);
+        if (fStat.mtimeMs >= cutoffMs) {
+          allFiles.push(fPath);
+        }
       }
-
-      const sessions: Array<{ id: string; ts: string; last: string; model: string; inp: number; out: number; msgs: number }> =
-        Array.isArray(JSON.parse(raw)) ? JSON.parse(raw) : [JSON.parse(raw)];
-
-      let totalInputTokens = 0;
-      let totalOutputTokens = 0;
-      const dailyCosts: Record<string, number> = {};
-      const modelBreakdown: Record<string, { cost: number; tokens: number; messages: number }> = {};
-      const recentSessions: SessionCost[] = [];
-
-      for (const s of sessions) {
-        totalInputTokens += s.inp;
-        totalOutputTokens += s.out;
-        const date = (s.ts || '').slice(0, 10);
-        if (date) dailyCosts[date] = (dailyCosts[date] || 0) + s.inp + s.out;
-
-        if (!modelBreakdown[s.model]) modelBreakdown[s.model] = { cost: 0, tokens: 0, messages: 0 };
-        modelBreakdown[s.model].tokens += s.inp + s.out;
-        modelBreakdown[s.model].messages += s.msgs;
-
-        recentSessions.push({
-          sessionId: s.id || 'unknown',
-          project: 'kira',
-          model: s.model,
-          date,
-          inputTokens: s.inp,
-          outputTokens: s.out,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-          totalCost: 0,
-          cacheSavings: 0,
-          messageCount: s.msgs,
-          lastActivity: s.last || s.ts || '',
-        });
-      }
-
-      recentSessions.sort((a, b) => b.lastActivity.localeCompare(a.lastActivity));
-
-      const summary: CostSummary = {
-        totalCost: 0,
-        totalCacheSavings: 0,
-        totalInputTokens,
-        totalOutputTokens,
-        totalCacheReadTokens: 0,
-        totalCacheWriteTokens: 0,
-        dailyCosts,
-        modelBreakdown,
-        recentSessions: recentSessions.slice(0, 20),
-        monthlyProjection: 0,
-        dailyBurnRate: 0,
-      };
-
-      costCaches.set(cacheKey, { data: summary, timestamp: Date.now() });
-      return summary;
-    } catch (err) {
-      console.error('Kira cost SSH error:', err);
-      costCaches.set(cacheKey, { data: ZERO_COST_SUMMARY, timestamp: Date.now() });
-      return ZERO_COST_SUMMARY;
-    }
-  });
+    } catch { /* directory may not exist */ }
+  }
+  return allFiles;
 }
 
 async function computeCosts(agent: AgentId = 'finn', days: number = 30): Promise<CostSummary> {
-  if (agent === 'kira') return computeKiraCosts(days);
-
   const cacheKey = `${agent}-${days}`;
   const cached = costCaches.get(cacheKey);
   if (cached && Date.now() - cached.timestamp < COST_CACHE_TTL) {
@@ -350,21 +238,7 @@ async function computeCosts(agent: AgentId = 'finn', days: number = 30): Promise
   cutoff.setDate(cutoff.getDate() - days);
   const cutoffMs = cutoff.getTime();
 
-  // Finn reads from local OpenClaw sessions directory
-  const dirPath = FINN_SESSIONS_PATH;
-  const allFiles: string[] = [];
-
-  try {
-    const files = await fs.readdir(dirPath);
-    for (const f of files) {
-      if (!f.endsWith('.jsonl')) continue;
-      const fPath = path.join(dirPath, f);
-      const fStat = await fs.stat(fPath);
-      if (fStat.mtimeMs >= cutoffMs) {
-        allFiles.push(fPath);
-      }
-    }
-  } catch { /* skip */ }
+  const allFiles = await collectSessionFiles(agent, cutoffMs);
 
   // Parse files in batches to limit memory
   const BATCH_SIZE = 50;
@@ -467,8 +341,9 @@ interface HealthSnapshot {
 const healthHistories: Record<AgentId, HealthSnapshot[]> = { finn: [], kira: [] };
 const MAX_HEALTH_SNAPSHOTS = 288; // 24h at 5-min intervals
 
-async function captureFinnHealthSnapshot(): Promise<HealthSnapshot> {
-  // CPU: load average
+/** Capture local system health snapshot (both agents run on this same Windows PC) */
+async function captureLocalHealthSnapshot(): Promise<HealthSnapshot> {
+  // CPU: load average (on Windows these are always 0, so we use a rough estimate)
   const loadAvg = os.loadavg();
   const cpuCount = os.cpus().length;
   const cpuPercent = Math.min(100, Math.round((loadAvg[0] / cpuCount) * 100));
@@ -479,14 +354,13 @@ async function captureFinnHealthSnapshot(): Promise<HealthSnapshot> {
   const memUsed = memTotal - memFree;
   const memPercent = Math.round((memUsed / memTotal) * 100);
 
-  // Disk (macOS-compatible)
+  // Disk (Windows-compatible via wmic or df in Git Bash)
   let diskUsed = 0;
   let diskTotal = 0;
   let diskPercent = 0;
   try {
     const { stdout } = await execAsync('df -k / | tail -1');
     const parts = stdout.trim().split(/\s+/);
-    // df -k output: Filesystem 1K-blocks Used Available Use% Mounted
     const totalBlocks = parseInt(parts[1], 10) || 0;
     const usedBlocks = parseInt(parts[2], 10) || 0;
     diskTotal = totalBlocks * 1024;
@@ -507,44 +381,6 @@ async function captureFinnHealthSnapshot(): Promise<HealthSnapshot> {
   };
 }
 
-async function captureKiraHealthSnapshot(): Promise<HealthSnapshot> {
-  // Fetch CPU, RAM, Disk from Windows via SSH PowerShell
-  const psScript = `
-$cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
-$os = Get-CimInstance Win32_OperatingSystem
-$disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
-Write-Output "$cpu|$($os.TotalVisibleMemorySize)|$($os.FreePhysicalMemory)|$($disk.Size)|$($disk.FreeSpace)"
-`.trim();
-
-  const raw = await sshPowerShell(psScript);
-  const parts = raw.trim().split('|');
-
-  const cpuPercent = Math.round(parseFloat(parts[0]) || 0);
-  // Win32_OperatingSystem reports KB
-  const memTotalKB = parseFloat(parts[1]) || 0;
-  const memFreeKB = parseFloat(parts[2]) || 0;
-  const memTotal = memTotalKB * 1024;
-  const memUsed = (memTotalKB - memFreeKB) * 1024;
-  const memPercent = memTotal > 0 ? Math.round((memUsed / memTotal) * 100) : 0;
-
-  const diskTotal = parseFloat(parts[3]) || 0;
-  const diskFree = parseFloat(parts[4]) || 0;
-  const diskUsed = diskTotal - diskFree;
-  const diskPercent = diskTotal > 0 ? Math.round((diskUsed / diskTotal) * 100) : 0;
-
-  return {
-    timestamp: new Date().toISOString(),
-    cpu: cpuPercent,
-    memUsed,
-    memTotal,
-    memPercent,
-    diskUsed,
-    diskTotal,
-    diskPercent,
-    loadAvg: [0, 0, 0], // Windows doesn't have load average
-  };
-}
-
 function pushSnapshot(agent: AgentId, snap: HealthSnapshot) {
   healthHistories[agent].push(snap);
   if (healthHistories[agent].length > MAX_HEALTH_SNAPSHOTS) {
@@ -552,39 +388,23 @@ function pushSnapshot(agent: AgentId, snap: HealthSnapshot) {
   }
 }
 
-// Cache for Kira's system info (hostname, OS, CPU model, etc.) — refreshed every 10 min
-let kiraSystemInfoCache: { hostname: string; platform: string; cpuModel: string; cpuCount: number; uptime: number } | null = null;
-let kiraSystemInfoTimestamp = 0;
-
-// Capture Finn snapshot every 5 minutes
+// Both agents share the same machine, so health snapshots are identical
 async function startHealthMonitoring() {
-  // Initial Finn snapshot
+  // Initial snapshot for both agents
   try {
-    const snap = await captureFinnHealthSnapshot();
+    const snap = await captureLocalHealthSnapshot();
     pushSnapshot('finn', snap);
+    pushSnapshot('kira', snap);
   } catch { /* skip */ }
 
-  // Finn: every 5 minutes
+  // Every 5 minutes, capture for both
   setInterval(async () => {
     try {
-      const s = await captureFinnHealthSnapshot();
+      const s = await captureLocalHealthSnapshot();
       pushSnapshot('finn', s);
+      pushSnapshot('kira', s);
     } catch { /* skip */ }
   }, 5 * 60 * 1000);
-
-  // Initial Kira snapshot (best-effort)
-  try {
-    const snap = await captureKiraHealthSnapshot();
-    pushSnapshot('kira', snap);
-  } catch { /* Kira offline, no-op */ }
-
-  // Kira: every 10 minutes (SSH latency)
-  setInterval(async () => {
-    try {
-      const s = await captureKiraHealthSnapshot();
-      pushSnapshot('kira', s);
-    } catch { /* Kira offline, no-op */ }
-  }, 10 * 60 * 1000);
 }
 
 startHealthMonitoring();
@@ -592,56 +412,12 @@ startHealthMonitoring();
 router.get('/api/system/health', async (_req: Request, res: Response) => {
   try {
     const agent = getAgentFromReq(_req);
+    const current = await captureLocalHealthSnapshot();
+    pushSnapshot(agent, current);
 
-    if (agent === 'kira') {
-      try {
-        const current = await captureKiraHealthSnapshot();
-        pushSnapshot('kira', current);
-
-        // Fetch system info (best-effort, cached)
-        let sysInfo = kiraSystemInfoCache;
-        if (!sysInfo || Date.now() - kiraSystemInfoTimestamp > 600_000) {
-          try {
-            const raw = await sshPowerShell(`
-$cs = Get-CimInstance Win32_ComputerSystem
-$os = Get-CimInstance Win32_OperatingSystem
-$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
-$uptime = (Get-Date) - $os.LastBootUpTime
-Write-Output "$($cs.Name)|$($os.Caption) $($os.Version)|$($cpu.Name)|$($cpu.NumberOfLogicalProcessors)|$([int]$uptime.TotalSeconds)"
-`.trim());
-            const parts = raw.split('|');
-            sysInfo = {
-              hostname: parts[0] || 'kira-pc',
-              platform: parts[1] || 'Windows',
-              cpuModel: parts[2] || 'unknown',
-              cpuCount: parseInt(parts[3]) || 0,
-              uptime: parseInt(parts[4]) || 0,
-            };
-            kiraSystemInfoCache = sysInfo;
-            kiraSystemInfoTimestamp = Date.now();
-          } catch { /* use stale cache or defaults */ }
-        }
-
-        res.json({
-          current,
-          history: healthHistories.kira,
-          uptime: sysInfo?.uptime ?? 0,
-          hostname: sysInfo?.hostname ?? 'kira-pc',
-          platform: sysInfo?.platform ?? 'Windows',
-          cpuModel: sysInfo?.cpuModel ?? 'unknown',
-          cpuCount: sysInfo?.cpuCount ?? 0,
-        });
-      } catch {
-        res.status(503).json({ error: 'Kira offline', offline: true });
-      }
-      return;
-    }
-
-    // Finn: local OS metrics
-    const current = await captureFinnHealthSnapshot();
     res.json({
       current,
-      history: healthHistories.finn,
+      history: healthHistories[agent],
       uptime: os.uptime(),
       hostname: os.hostname(),
       platform: `${os.type()} ${os.release()}`,
@@ -708,59 +484,54 @@ async function tailFile(filePath: string, agent: AgentId, format: 'claude' | 'op
 }
 
 async function startFileWatching() {
-  // Watch Finn's OpenClaw sessions directory for real-time updates
-  try {
-    const dirPath = FINN_SESSIONS_PATH;
-    const files = await fs.readdir(dirPath);
-    for (const f of files) {
-      if (!f.endsWith('.jsonl')) continue;
-      const fPath = path.join(dirPath, f);
-      const fStat = await fs.stat(fPath);
-      fileOffsets.set(fPath, fStat.size);
-    }
+  // Watch both agents' session directories for real-time updates
+  for (const agent of ['finn', 'kira'] as AgentId[]) {
+    for (const dirPath of getSessionsPaths(agent)) {
+      try {
+        const files = await fs.readdir(dirPath);
+        for (const f of files) {
+          if (!f.endsWith('.jsonl')) continue;
+          const fPath = path.join(dirPath, f);
+          const fStat = await fs.stat(fPath);
+          fileOffsets.set(fPath, fStat.size);
+        }
 
-    const watcher = watch(dirPath, async (eventType, filename) => {
-      if (!filename?.endsWith('.jsonl')) return;
-      if (sseClients.length === 0) return;
-      const fPath = path.join(dirPath, filename);
-      await tailFile(fPath, 'finn', 'openclaw');
-    });
-    watchers.push(watcher);
-  } catch { /* Finn sessions dir not found */ }
+        const watcher = watch(dirPath, async (eventType, filename) => {
+          if (!filename?.endsWith('.jsonl')) return;
+          if (sseClients.length === 0) return;
+          const fPath = path.join(dirPath, filename);
+          await tailFile(fPath, agent, 'openclaw');
+        });
+        watchers.push(watcher);
+      } catch { /* sessions dir not found */ }
+    }
+  }
 }
 
 startFileWatching();
 
 // ─── Background cache warming ───
-// Pre-warm both agents at startup, then keep Kira's caches hot on intervals
-// so dashboard loads are always instant regardless of which agent is selected.
-
-async function warmKiraCaches() {
-  try { await computeKiraCosts(30); } catch { /* Kira offline */ }
-  try { await computeKiraHeatmap(); } catch { /* Kira offline */ }
-  try { await computeKiraRateLimits(); } catch { /* Kira offline */ }
-}
+// Pre-warm both agents at startup, then keep caches hot on intervals.
 
 setTimeout(async () => {
-  // Finn (local, fast)
-  try { await computeCosts('finn'); } catch { /* ignore */ }
-  try { await computeHeatmap('finn'); } catch { /* ignore */ }
-  // Kira (SSH, staggered to avoid hammering)
-  setTimeout(() => warmKiraCaches(), 5_000);
+  for (const agent of ['finn', 'kira'] as AgentId[]) {
+    try { await computeCosts(agent); } catch { /* ignore */ }
+    try { await computeHeatmap(agent); } catch { /* ignore */ }
+  }
 }, 100);
 
-// Kira background refresh: costs every 5 min, heatmap every 10 min, rate limits every 2 min
+// Refresh costs every 5 min, heatmap every 10 min for both agents
 setInterval(async () => {
-  try { await computeKiraCosts(30); } catch { /* Kira offline */ }
+  for (const agent of ['finn', 'kira'] as AgentId[]) {
+    try { await computeCosts(agent); } catch { /* ignore */ }
+  }
 }, 5 * 60_000);
 
 setInterval(async () => {
-  try { await computeKiraHeatmap(); } catch { /* Kira offline */ }
+  for (const agent of ['finn', 'kira'] as AgentId[]) {
+    try { await computeHeatmap(agent); } catch { /* ignore */ }
+  }
 }, 10 * 60_000);
-
-setInterval(async () => {
-  try { await computeKiraRateLimits(); } catch { /* Kira offline */ }
-}, 2 * 60_000);
 
 // ─── Feed event types ───
 
@@ -1031,32 +802,31 @@ function parseFeedEvent(line: string, sessionId: string, format: 'claude' | 'ope
   } catch { return null; }
 }
 
-/** Send recent history from Finn's local JSONL files to a newly connected SSE client. */
-async function backfillFinnFeed(res: Response) {
+/** Send recent history from local JSONL session files to a newly connected SSE client. */
+async function backfillAgentFeed(agent: AgentId, res: Response) {
   try {
-    const dirPath = FINN_SESSIONS_PATH;
-    const files = await fs.readdir(dirPath);
-    const jsonlFiles = files.filter(f => f.endsWith('.jsonl'));
-
-    // Stat and sort by mtime to find most recent session files
-    const withStats = await Promise.all(
-      jsonlFiles.map(async f => {
-        const fPath = path.join(dirPath, f);
-        const fStat = await fs.stat(fPath);
-        return { f, fPath, mtimeMs: fStat.mtimeMs };
-      })
-    );
-    withStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const allWithStats: Array<{ f: string; fPath: string; mtimeMs: number }> = [];
+    for (const dirPath of getSessionsPaths(agent)) {
+      try {
+        const files = await fs.readdir(dirPath);
+        const jsonlFiles = files.filter(f => f.endsWith('.jsonl'));
+        for (const f of jsonlFiles) {
+          const fPath = path.join(dirPath, f);
+          const fStat = await fs.stat(fPath);
+          allWithStats.push({ f, fPath, mtimeMs: fStat.mtimeMs });
+        }
+      } catch { /* dir may not exist */ }
+    }
+    allWithStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
     const recentEvents: Array<FeedEvent> = [];
     // Take last 10 lines from 3 most recent session files
-    for (const { f, fPath } of withStats.slice(0, 3)) {
+    for (const { f, fPath } of allWithStats.slice(0, 3)) {
       const content = await fs.readFile(fPath, 'utf-8');
       const lines = content.trim().split('\n');
       for (const line of lines.slice(-10)) {
         const events = parseFeedEvent(line, f.replace('.jsonl', ''), 'openclaw');
         if (events) {
-          // During backfill, filter out tool events to keep feed focused on conversation
           for (const evt of events) {
             if (evt.type !== 'tool_call' && evt.type !== 'tool_result') {
               recentEvents.push(evt);
@@ -1071,42 +841,6 @@ async function backfillFinnFeed(res: Response) {
       try { res.write(`event: message\ndata: ${JSON.stringify(evt)}\n\n`); } catch { break; }
     }
   } catch { /* skip */ }
-}
-
-/** Send recent history from Kira's sessions via SSH to a newly connected SSE client. Returns the latest timestamp sent. */
-async function backfillKiraFeed(res: Response): Promise<string> {
-  try {
-    const psScript = `
-$dir = '${KIRA_SESSIONS_PATH}'
-$r = @()
-Get-ChildItem $dir -Filter '*.jsonl' | Sort-Object LastWriteTime -Descending | Select-Object -First 3 | ForEach-Object {
-  Get-Content $_.FullName | Select-Object -Last 10
-}
-Write-Output '---END---'
-`.trim();
-    const raw = await sshPowerShell(psScript);
-    if (!raw) return '';
-
-    const lines = raw.split('\n').filter(l => l.trim() && l.trim() !== '---END---');
-    const events: Array<FeedEvent> = [];
-    for (const line of lines) {
-      const parsed = parseFeedEvent(line, 'kira', 'openclaw');
-      if (parsed) {
-        // During backfill, filter out tool events to keep feed focused on conversation
-        for (const evt of parsed) {
-          if (evt.type !== 'tool_call' && evt.type !== 'tool_result') {
-            events.push(evt);
-          }
-        }
-      }
-    }
-    events.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-    const toSend = events.slice(-20);
-    for (const evt of toSend) {
-      try { res.write(`event: message\ndata: ${JSON.stringify(evt)}\n\n`); } catch { break; }
-    }
-    return toSend.length > 0 ? toSend[toSend.length - 1].timestamp : '';
-  } catch { /* SSH error, skip */ return ''; }
 }
 
 router.get('/api/live', (req: Request, res: Response) => {
@@ -1132,44 +866,11 @@ router.get('/api/live', (req: Request, res: Response) => {
   res.write(`event: connected\ndata: ${JSON.stringify({ clientId, timestamp: new Date().toISOString() })}\n\n`);
 
   // Backfill recent history so the feed isn't empty on connect
-  if (agent === 'finn') {
-    backfillFinnFeed(res);
-  }
-
-  // Kira: backfill + poll the most recently modified session file every 10s
-  let kiraPollInterval: ReturnType<typeof setInterval> | null = null;
-  if (agent === 'kira') {
-    let lastSeenTimestamp = '';
-    backfillKiraFeed(res).then(ts => { if (ts) lastSeenTimestamp = ts; });
-    const pollKiraFeed = async () => {
-      try {
-        const psScript = `
-$dir = '${KIRA_SESSIONS_PATH}'
-$latest = Get-ChildItem $dir -Filter '*.jsonl' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if ($latest) { Get-Content $latest.FullName | Select-Object -Last 20 }
-`.trim();
-        const raw = await sshPowerShell(psScript);
-        if (!raw) return;
-
-        const lines = raw.split('\n').filter(Boolean);
-        for (const line of lines) {
-          const parsed = parseFeedEvent(line, 'kira', 'openclaw');
-          if (!parsed) continue;
-          for (const evt of parsed) {
-            if (!evt.timestamp || evt.timestamp <= lastSeenTimestamp) continue;
-            lastSeenTimestamp = evt.timestamp;
-            broadcastSSE('message', evt, 'kira');
-          }
-        }
-      } catch { /* SSH error, skip */ }
-    };
-
-    kiraPollInterval = setInterval(pollKiraFeed, 10_000);
-  }
+  // Both agents are local now, so use the same backfill logic
+  backfillAgentFeed(agent, res);
 
   req.on('close', () => {
     clearInterval(heartbeat);
-    if (kiraPollInterval) clearInterval(kiraPollInterval);
     const idx = sseClients.findIndex(c => c.id === clientId);
     if (idx !== -1) sseClients.splice(idx, 1);
   });
@@ -1188,61 +889,36 @@ router.get('/api/feed/recent', async (req: Request, res: Response) => {
 
     const events: FeedEvent[] = [];
 
-    if (agent === 'finn') {
-      // Read from Finn's local OpenClaw session files
-      const dirPath = FINN_SESSIONS_PATH;
+    // Both agents are local — read from their session directories
+    const allWithStats: Array<{ f: string; fPath: string; mtimeMs: number }> = [];
+    for (const dirPath of getSessionsPaths(agent)) {
       try {
         const files = await fs.readdir(dirPath);
         const jsonlFiles = files.filter(f => f.endsWith('.jsonl'));
-
-        // Stat and sort by mtime, take most recent files
-        const withStats = await Promise.all(
-          jsonlFiles.map(async f => {
-            const fPath = path.join(dirPath, f);
-            const fStat = await fs.stat(fPath);
-            return { f, fPath, mtimeMs: fStat.mtimeMs };
-          })
-        );
-        withStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
-
-        // Read from the 5 most recently modified session files
-        for (const { f, fPath } of withStats.slice(0, 5)) {
-          const content = await fs.readFile(fPath, 'utf-8');
-          const lines = content.trim().split('\n');
-          for (const line of lines) {
-            const parsed = parseFeedEvent(line, f.replace('.jsonl', ''), 'openclaw');
-            if (!parsed) continue;
-            for (const evt of parsed) {
-              if (evt.timestamp && new Date(evt.timestamp) >= cutoff) {
-                events.push(evt);
-              }
-            }
-          }
+        for (const f of jsonlFiles) {
+          const fPath = path.join(dirPath, f);
+          const fStat = await fs.stat(fPath);
+          allWithStats.push({ f, fPath, mtimeMs: fStat.mtimeMs });
         }
-      } catch { /* sessions dir not found */ }
-    } else {
-      // Kira: read via SSH
+      } catch { /* dir not found */ }
+    }
+    allWithStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+    // Read from the 5 most recently modified session files
+    for (const { f, fPath } of allWithStats.slice(0, 5)) {
       try {
-        const psScript = `
-$dir = '${KIRA_SESSIONS_PATH}'
-Get-ChildItem $dir -Filter '*.jsonl' | Sort-Object LastWriteTime -Descending | Select-Object -First 5 | ForEach-Object {
-  Get-Content $_.FullName | Select-Object -Last 50
-}
-`.trim();
-        const raw = await sshPowerShell(psScript);
-        if (raw) {
-          const lines = raw.split('\n').filter(Boolean);
-          for (const line of lines) {
-            const parsed = parseFeedEvent(line, 'kira', 'openclaw');
-            if (!parsed) continue;
-            for (const evt of parsed) {
-              if (evt.timestamp && new Date(evt.timestamp) >= cutoff) {
-                events.push(evt);
-              }
+        const content = await fs.readFile(fPath, 'utf-8');
+        const lines = content.trim().split('\n');
+        for (const line of lines) {
+          const parsed = parseFeedEvent(line, f.replace('.jsonl', ''), 'openclaw');
+          if (!parsed) continue;
+          for (const evt of parsed) {
+            if (evt.timestamp && new Date(evt.timestamp) >= cutoff) {
+              events.push(evt);
             }
           }
         }
-      } catch { /* SSH error */ }
+      } catch { /* skip unreadable file */ }
     }
 
     // Sort by timestamp and apply limit
@@ -1306,96 +982,7 @@ const ZERO_HEATMAP: HeatmapData = {
 const heatmapCaches = new Map<string, { data: HeatmapData; timestamp: number }>();
 const HEATMAP_CACHE_TTL = 5 * 60_000; // 5 minutes
 
-async function computeKiraHeatmap(): Promise<HeatmapData> {
-  const cached = heatmapCaches.get('kira');
-  if (cached && Date.now() - cached.timestamp < HEATMAP_CACHE_TTL) return cached.data;
-
-  return withKiraLock('kira-heatmap', async () => {
-    const psScript = `
-$dirs = @('${KIRA_SESSIONS_PATH}','${KIRA_SESSIONS_PATH_LEGACY}')
-$cutoff = (Get-Date).AddDays(-30)
-$grid = @{}; $daily = @{}; $sessions = 0; $msgs = 0
-foreach ($dir in $dirs) {
-  Get-ChildItem $dir -Filter '*.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $cutoff } | ForEach-Object {
-    $sessions++
-    foreach ($line in (Get-Content $_.FullName)) {
-      try {
-        $obj = $line | ConvertFrom-Json
-        if ($obj.type -eq 'message' -and ($obj.message.role -eq 'user' -or $obj.message.role -eq 'assistant') -and $obj.timestamp) {
-          $msgs++
-          $d = [datetime]::Parse($obj.timestamp)
-          $key = "$([int]$d.DayOfWeek)-$($d.Hour)"
-          if ($grid.ContainsKey($key)) { $grid[$key]++ } else { $grid[$key] = 1 }
-          $dk = $d.ToString('yyyy-MM-dd')
-          if ($daily.ContainsKey($dk)) { $daily[$dk]++ } else { $daily[$dk] = 1 }
-        }
-      } catch {}
-    }
-  }
-}
-@{ grid = $grid; daily = $daily; sessions = $sessions; msgs = $msgs } | ConvertTo-Json -Compress
-`.trim();
-
-    try {
-      const raw = await sshPowerShell(psScript);
-      if (!raw || raw === 'null') {
-        heatmapCaches.set('kira', { data: ZERO_HEATMAP, timestamp: Date.now() });
-        return ZERO_HEATMAP;
-      }
-
-      const parsed = JSON.parse(raw) as {
-        grid: Record<string, number>;
-        daily: Record<string, number>;
-        sessions: number;
-        msgs: number;
-      };
-
-      // Convert "dayOfWeek-hour" keys to 7x24 array
-      const grid: number[][] = Array.from({ length: 7 }, () => Array(24).fill(0));
-      for (const [key, count] of Object.entries(parsed.grid || {})) {
-        const [dayStr, hourStr] = key.split('-');
-        const day = parseInt(dayStr, 10);
-        const hour = parseInt(hourStr, 10);
-        if (day >= 0 && day < 7 && hour >= 0 && hour < 24) {
-          grid[day][hour] = count;
-        }
-      }
-
-      let peakHour = 0;
-      let peakDay = 0;
-      let peakVal = 0;
-      for (let d = 0; d < 7; d++) {
-        for (let h = 0; h < 24; h++) {
-          if (grid[d][h] > peakVal) {
-            peakVal = grid[d][h];
-            peakHour = h;
-            peakDay = d;
-          }
-        }
-      }
-
-      const data: HeatmapData = {
-        grid,
-        dailyActivity: parsed.daily || {},
-        totalSessions: parsed.sessions || 0,
-        totalMessages: parsed.msgs || 0,
-        peakHour,
-        peakDay,
-      };
-
-      heatmapCaches.set('kira', { data, timestamp: Date.now() });
-      return data;
-    } catch (err) {
-      console.error('Kira heatmap SSH error:', err);
-      heatmapCaches.set('kira', { data: ZERO_HEATMAP, timestamp: Date.now() });
-      return ZERO_HEATMAP;
-    }
-  });
-}
-
 async function computeHeatmap(agent: AgentId = 'finn'): Promise<HeatmapData> {
-  if (agent === 'kira') return computeKiraHeatmap();
-
   const cached = heatmapCaches.get(agent);
   if (cached && Date.now() - cached.timestamp < HEATMAP_CACHE_TTL) {
     return cached.data;
@@ -1411,53 +998,51 @@ async function computeHeatmap(agent: AgentId = 'finn'): Promise<HeatmapData> {
   let totalSessions = 0;
   let totalMessages = 0;
 
-  // Finn reads from local OpenClaw sessions directory
-  const dirPath = FINN_SESSIONS_PATH;
+  // Read from all session directories for this agent
   let fileCount = 0;
-  try {
-    const files = await fs.readdir(dirPath);
-    for (const f of files) {
-      if (!f.endsWith('.jsonl')) continue;
-      const fPath = path.join(dirPath, f);
-      const fStat = await fs.stat(fPath);
-      if (fStat.mtimeMs < cutoffMs) continue;
+  for (const dirPath of getSessionsPaths(agent)) {
+    try {
+      const files = await fs.readdir(dirPath);
+      for (const f of files) {
+        if (!f.endsWith('.jsonl')) continue;
+        const fPath = path.join(dirPath, f);
+        const fStat = await fs.stat(fPath);
+        if (fStat.mtimeMs < cutoffMs) continue;
 
-      totalSessions++;
+        totalSessions++;
 
-      // Read file and extract timestamps — OpenClaw format: type="message", message.role
-      try {
-        const content = await fs.readFile(fPath, 'utf-8');
-        const lines = content.trim().split('\n');
-        for (const line of lines) {
-          try {
-            const obj = JSON.parse(line);
-            if (!obj.timestamp) continue;
-            // OpenClaw: type="message" with message.role = "user"|"assistant"
-            if (obj.type === 'message') {
-              const role = obj.message?.role;
-              if (role !== 'user' && role !== 'assistant') continue;
-            } else if (obj.type !== 'user' && obj.type !== 'assistant') {
-              continue; // fallback for Claude Code format
-            }
-            totalMessages++;
+        try {
+          const content = await fs.readFile(fPath, 'utf-8');
+          const lines = content.trim().split('\n');
+          for (const line of lines) {
+            try {
+              const obj = JSON.parse(line);
+              if (!obj.timestamp) continue;
+              if (obj.type === 'message') {
+                const role = obj.message?.role;
+                if (role !== 'user' && role !== 'assistant') continue;
+              } else if (obj.type !== 'user' && obj.type !== 'assistant') {
+                continue;
+              }
+              totalMessages++;
 
-            const d = new Date(obj.timestamp);
-            if (d.getTime() < cutoffMs) continue;
+              const d = new Date(obj.timestamp);
+              if (d.getTime() < cutoffMs) continue;
 
-            const dayOfWeek = d.getDay(); // 0=Sun
-            const hour = d.getHours();
-            grid[dayOfWeek][hour]++;
+              const dayOfWeek = d.getDay();
+              const hour = d.getHours();
+              grid[dayOfWeek][hour]++;
 
-            const dateStr = d.toISOString().slice(0, 10);
-            dailyActivity[dateStr] = (dailyActivity[dateStr] || 0) + 1;
-          } catch { /* skip */ }
-        }
-      } catch { /* skip */ }
+              const dateStr = d.toISOString().slice(0, 10);
+              dailyActivity[dateStr] = (dailyActivity[dateStr] || 0) + 1;
+            } catch { /* skip */ }
+          }
+        } catch { /* skip */ }
 
-      // Yield every 50 files to let other requests through
-      if (++fileCount % 50 === 0) await yieldEventLoop();
-    }
-  } catch { /* skip */ }
+        if (++fileCount % 50 === 0) await yieldEventLoop();
+      }
+    } catch { /* dir not found */ }
+  }
 
   // Find peak
   let peakHour = 0;
@@ -1493,125 +1078,56 @@ router.get('/api/activity/heatmap', async (_req: Request, res: Response) => {
 // 5. RATE LIMIT MONITORING — Track token usage in rolling windows
 // ══════════════════════════════════════════════════════════════════════════════
 
-const KIRA_RL_CACHE_KEY = 'kira-ratelimits';
-const ZERO_RATE_LIMITS = {
-  rolling5h: { tokens: 0, requests: 0 },
-  rolling1h: { tokens: 0, requests: 0 },
-  timestamp: new Date().toISOString(),
-};
-
-async function computeKiraRateLimits() {
-  const rlCached = costCaches.get(KIRA_RL_CACHE_KEY);
-  if (rlCached && Date.now() - rlCached.timestamp < 60_000) return rlCached.data;
-
-  return withKiraLock('kira-ratelimits', async () => {
-    const psScript = `
-$dir = '${KIRA_SESSIONS_PATH}'
-$cutoff = (Get-Date).AddHours(-5)
-$r = @()
-Get-ChildItem $dir -Filter '*.jsonl' | Where-Object { $_.LastWriteTime -ge $cutoff } | ForEach-Object {
-  foreach ($line in (Get-Content $_.FullName)) {
-    try {
-      $obj = $line | ConvertFrom-Json
-      if ($obj.type -eq 'message' -and $obj.message.role -eq 'assistant' -and $obj.message.usage -and $obj.timestamp) {
-        $r += @{ ts=$obj.timestamp; inp=$obj.message.usage.input; out=$obj.message.usage.output }
-      }
-    } catch {}
-  }
-}
-$r | ConvertTo-Json -Compress
-`.trim();
-
-    try {
-      const raw = await sshPowerShell(psScript);
-      if (!raw || raw === 'null') return null;
-      const entries: Array<{ ts: string; inp: number; out: number }> =
-        Array.isArray(JSON.parse(raw)) ? JSON.parse(raw) : [JSON.parse(raw)];
-
-      const now = Date.now();
-      const oneHourAgo = now - 60 * 60 * 1000;
-      const fiveHoursAgo = now - 5 * 60 * 60 * 1000;
-      let tokens1h = 0, tokens5h = 0, req1h = 0, req5h = 0;
-
-      for (const e of entries) {
-        const ts = new Date(e.ts).getTime();
-        const totalTokens = (e.inp || 0) + (e.out || 0);
-        if (ts >= fiveHoursAgo) { tokens5h += totalTokens; req5h++; }
-        if (ts >= oneHourAgo) { tokens1h += totalTokens; req1h++; }
-      }
-
-      const result = {
-        rolling5h: { tokens: tokens5h, requests: req5h },
-        rolling1h: { tokens: tokens1h, requests: req1h },
-        timestamp: new Date().toISOString(),
-      };
-      costCaches.set(KIRA_RL_CACHE_KEY, { data: result as any, timestamp: Date.now() });
-      return result;
-    } catch (err) {
-      console.error('Kira rate-limits SSH error:', err);
-      return null;
-    }
-  });
-}
-
 router.get('/api/rate-limits', async (_req: Request, res: Response) => {
   try {
     const agent = getAgentFromReq(_req);
 
-    if (agent === 'kira') {
-      const rlData = await computeKiraRateLimits();
-      if (rlData) return res.json(rlData);
-      // Return last cached data if available, otherwise zeros
-      const stale = costCaches.get(KIRA_RL_CACHE_KEY);
-      return res.json(stale?.data || ZERO_RATE_LIMITS);
-    }
-
-    // Parse recent sessions (last 5 hours for rolling window) from Finn's OpenClaw sessions
     const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000);
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
 
     let tokensLast5h = 0;
     let tokensLast1h = 0;
     let requestsLast5h = 0;
     let requestsLast1h = 0;
-    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
 
     let rlFileCount = 0;
-    try {
-      const files = await fs.readdir(FINN_SESSIONS_PATH);
-      for (const f of files) {
-        if (!f.endsWith('.jsonl')) continue;
-        const fPath = path.join(FINN_SESSIONS_PATH, f);
-        const fStat = await fs.stat(fPath);
-        if (fStat.mtimeMs < fiveHoursAgo.getTime()) continue;
+    for (const dirPath of getSessionsPaths(agent)) {
+      try {
+        const files = await fs.readdir(dirPath);
+        for (const f of files) {
+          if (!f.endsWith('.jsonl')) continue;
+          const fPath = path.join(dirPath, f);
+          const fStat = await fs.stat(fPath);
+          if (fStat.mtimeMs < fiveHoursAgo.getTime()) continue;
 
-        const content = await fs.readFile(fPath, 'utf-8');
-        for (const line of content.trim().split('\n')) {
-          try {
-            const obj = JSON.parse(line);
-            const msg = typeof obj.message === 'object' ? obj.message : null;
-            const usage = msg?.usage;
-            if (!usage || !obj.timestamp) continue;
+          const content = await fs.readFile(fPath, 'utf-8');
+          for (const line of content.trim().split('\n')) {
+            try {
+              const obj = JSON.parse(line);
+              const msg = typeof obj.message === 'object' ? obj.message : null;
+              const usage = msg?.usage;
+              if (!usage || !obj.timestamp) continue;
 
-            const ts = new Date(obj.timestamp);
-            // Support both Claude Code (input_tokens) and OpenClaw (input) formats
-            const totalTokens = (usage.input_tokens || usage.input || 0) +
-              (usage.output_tokens || usage.output || 0) +
-              (usage.cache_read_input_tokens || usage.cacheRead || 0) +
-              (usage.cache_creation_input_tokens || usage.cacheWrite || 0);
+              const ts = new Date(obj.timestamp);
+              const totalTokens = (usage.input_tokens || usage.input || 0) +
+                (usage.output_tokens || usage.output || 0) +
+                (usage.cache_read_input_tokens || usage.cacheRead || 0) +
+                (usage.cache_creation_input_tokens || usage.cacheWrite || 0);
 
-            if (ts >= fiveHoursAgo) {
-              tokensLast5h += totalTokens;
-              requestsLast5h++;
-            }
-            if (ts >= oneHourAgo) {
-              tokensLast1h += totalTokens;
-              requestsLast1h++;
-            }
-          } catch { /* skip */ }
+              if (ts >= fiveHoursAgo) {
+                tokensLast5h += totalTokens;
+                requestsLast5h++;
+              }
+              if (ts >= oneHourAgo) {
+                tokensLast1h += totalTokens;
+                requestsLast1h++;
+              }
+            } catch { /* skip */ }
+          }
+          if (++rlFileCount % 50 === 0) await yieldEventLoop();
         }
-        if (++rlFileCount % 50 === 0) await yieldEventLoop();
-      }
-    } catch { /* skip */ }
+      } catch { /* dir not found */ }
+    }
 
     res.json({
       rolling5h: { tokens: tokensLast5h, requests: requestsLast5h },
@@ -1636,86 +1152,51 @@ interface ServiceInfo {
   description: string;
 }
 
-async function getFinnServiceStatus(): Promise<ServiceInfo[]> {
+async function getAgentServiceStatus(agent: AgentId): Promise<ServiceInfo[]> {
   const services: ServiceInfo[] = [];
+  const config = AGENT_CONFIG[agent];
 
-  // 1. API Server — if we're serving this request, we're running
-  const serverPid = process.pid;
-  let serverUptime = '';
-  try {
-    const { stdout: psOut } = await execAsync(`ps -p ${serverPid} -o etime= 2>/dev/null`);
-    serverUptime = psOut.trim();
-  } catch { /* skip */ }
-  services.push({ name: 'api-server', status: 'running', pid: serverPid, uptime: serverUptime, description: 'Dashboard API server (port 3001)' });
-
-  // 2. Tailscale Funnel — check via `tailscale funnel status`
-  try {
-    const { stdout } = await execAsync(`/opt/homebrew/bin/tailscale funnel status 2>&1`);
-    const isOn = stdout.includes('Funnel on');
-    services.push({ name: 'tailscale-funnel', status: isOn ? 'running' : 'stopped', description: 'Tailscale funnel for external access' });
-  } catch {
-    services.push({ name: 'tailscale-funnel', status: 'unknown', description: 'Tailscale funnel for external access' });
+  // 1. API Server — if we're serving this request, we're running (only show for finn)
+  if (agent === 'finn') {
+    services.push({ name: 'api-server', status: 'running', pid: process.pid, description: 'Dashboard API server (port 3001)' });
   }
 
-  // 3. OpenClaw Gateway — check gateway health
+  // 2. OpenClaw Gateway — check via local openclaw command
   try {
-    const { stdout } = await execAsync(`pgrep -f 'openclaw-gateway' 2>/dev/null || true`);
-    const pids = stdout.trim().split('\n').filter(Boolean).map(Number).filter(p => p > 0);
-    if (pids.length > 0) {
-      let uptime = '';
-      try {
-        const { stdout: psOut } = await execAsync(`ps -p ${pids[0]} -o etime= 2>/dev/null`);
-        uptime = psOut.trim();
-      } catch { /* skip */ }
-      services.push({ name: 'openclaw-gateway', status: 'running', pid: pids[0], uptime, description: 'OpenClaw agent gateway (Finn)' });
-    } else {
-      services.push({ name: 'openclaw-gateway', status: 'stopped', description: 'OpenClaw agent gateway (Finn)' });
-    }
+    const openclawCmd = agent === 'kira' ? 'openclaw gateway health 2>&1' : 'openclaw gateway health 2>&1';
+    const { stdout } = await execAsync(openclawCmd, { timeout: 10000 });
+    const isOk = stdout.includes('OK') || stdout.includes('ok');
+    services.push({
+      name: 'openclaw-gateway',
+      status: isOk ? 'running' : 'stopped',
+      description: `OpenClaw agent gateway (${agent === 'finn' ? 'Finn' : 'Kira'})`,
+    });
   } catch {
-    services.push({ name: 'openclaw-gateway', status: 'unknown', description: 'OpenClaw agent gateway (Finn)' });
+    services.push({
+      name: 'openclaw-gateway',
+      status: 'unknown',
+      description: `OpenClaw agent gateway (${agent === 'finn' ? 'Finn' : 'Kira'})`,
+    });
   }
 
-  return services;
-}
-
-async function getKiraServiceStatus(): Promise<ServiceInfo[]> {
-  const services: ServiceInfo[] = [];
-
-  // 1. OpenClaw Gateway — check via scheduled task status
+  // 3. Tailscale — check if tailscaled is running (shared by both agents on same machine)
   try {
-    const raw = await sshExec('openclaw gateway health 2>&1');
-    const isOk = raw.includes('OK');
-    if (isOk) {
-      services.push({ name: 'openclaw-gateway', status: 'running', description: 'OpenClaw agent gateway (Kira)' });
-    } else {
-      services.push({ name: 'openclaw-gateway', status: 'stopped', description: 'OpenClaw agent gateway (Kira)' });
-    }
-  } catch {
-    services.push({ name: 'openclaw-gateway', status: 'unknown', description: 'OpenClaw agent gateway (Kira)' });
-  }
-
-  // 2. Tailscale — check if tailscaled is running
-  try {
-    const raw = await sshPowerShell(
-      `Get-Process -Name 'tailscaled' -ErrorAction SilentlyContinue | Select-Object -First 1 | Format-List Id`
-    );
-    const pidMatch = raw.match(/Id\s*:\s*(\d+)/);
-    if (pidMatch) {
-      services.push({ name: 'tailscale', status: 'running', pid: parseInt(pidMatch[1], 10), description: 'Tailscale VPN connection' });
-    } else {
-      services.push({ name: 'tailscale', status: 'stopped', description: 'Tailscale VPN connection' });
-    }
+    const { stdout } = await execAsync('tasklist /FI "IMAGENAME eq tailscaled.exe" /NH 2>nul', { timeout: 5000 });
+    const isRunning = stdout.includes('tailscaled.exe');
+    services.push({ name: 'tailscale', status: isRunning ? 'running' : 'stopped', description: 'Tailscale VPN connection' });
   } catch {
     services.push({ name: 'tailscale', status: 'unknown', description: 'Tailscale VPN connection' });
   }
 
-  // 3. Discord — check if Kira's Discord is connected (from gateway health)
-  try {
-    const raw = await sshExec('openclaw gateway health 2>&1');
-    const discordOk = raw.includes('Discord: ok');
-    services.push({ name: 'discord', status: discordOk ? 'running' : 'stopped', description: 'Discord bot (@KiraBot)' });
-  } catch {
-    services.push({ name: 'discord', status: 'unknown', description: 'Discord bot (@KiraBot)' });
+  // 4. For Kira, check Discord bot
+  if (agent === 'kira') {
+    try {
+      const { stdout } = await execAsync('openclaw gateway health 2>&1', { timeout: 10000 });
+      const discordOk = stdout.includes('Discord: ok');
+      services.push({ name: 'discord', status: discordOk ? 'running' : 'stopped', description: 'Discord bot (@KiraBot)' });
+    } catch {
+      services.push({ name: 'discord', status: 'unknown', description: 'Discord bot (@KiraBot)' });
+    }
   }
 
   return services;
@@ -1724,9 +1205,7 @@ async function getKiraServiceStatus(): Promise<ServiceInfo[]> {
 router.get('/api/services', async (_req: Request, res: Response) => {
   try {
     const agent = getAgentFromReq(_req);
-    const services = agent === 'kira'
-      ? await getKiraServiceStatus()
-      : await getFinnServiceStatus();
+    const services = await getAgentServiceStatus(agent);
     res.json({ services });
   } catch (error) {
     console.error('Services error:', error);
@@ -1739,16 +1218,12 @@ router.post('/api/services/:name/restart', async (req: Request, res: Response) =
     const agent = getAgentFromReq(req);
     const { name } = req.params;
 
-    // Disable restart for Kira
-    if (agent === 'kira') {
-      return res.status(403).json({ error: 'Remote service restart is not supported for Kira' });
-    }
-
     // Only allow specific services to be restarted
+    const agentBase = AGENT_CONFIG[agent].basePath;
     const restartCommands: Record<string, { kill: string; start?: string }> = {
       'api-server': {
-        kill: "pkill -f 'tsx.*index\\.ts'",
-        start: `cd ${AGENTS_BASE_PATH}/agent-dashboard/server && npx tsx index.ts &`,
+        kill: "taskkill /F /FI \"WINDOWTITLE eq tsx*\" 2>nul || true",
+        start: `cd "${path.join(agentBase, 'agent-dashboard', 'server')}" && npx tsx index.ts &`,
       },
     };
 

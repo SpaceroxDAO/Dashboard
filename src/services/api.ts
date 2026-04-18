@@ -2,14 +2,14 @@
  * API service for connecting to the local file server
  *
  * When running locally with the API server (npm run dev:full),
- * this connects to the real file system at /Users/lume/clawd/
+ * this connects to the real file system on RexIII.
  *
- * When running standalone or on Vercel, falls back to mock data.
+ * When running standalone or on Vercel, connects via Tailscale Funnel.
  */
 
 const API_BASE = import.meta.env.VITE_API_URL || (
   import.meta.env.PROD
-    ? 'https://lumes-virtual-machine.tailf846b2.ts.net/dashboard-api'
+    ? 'https://rexiii.tailf846b2.ts.net/dashboard-api'
     : 'http://localhost:3001'
 );
 

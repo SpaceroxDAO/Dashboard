@@ -14,17 +14,34 @@ const execAsync = promisify(exec);
 const app = express();
 const PORT = process.env.API_PORT || 3001;
 
-// Base paths for agent files
-const AGENTS_BASE_PATH = '/Users/lume/clawd';
+// Per-agent base paths (both local on this Windows PC)
+const AGENT_BASES: Record<string, string> = {
+  finn: path.join(os.homedir(), 'finn'),
+  kira: path.join(os.homedir(), 'kira'),
+};
+
+// Default agent paths (Finn is the primary agent for the dashboard)
+const AGENTS_BASE_PATH = AGENT_BASES.finn;
 const MEMORY_PATH = path.join(AGENTS_BASE_PATH, 'memory');
 const SKILLS_PATH = path.join(AGENTS_BASE_PATH, 'skills');
 const SCRIPTS_PATH = path.join(AGENTS_BASE_PATH, 'scripts');
 const HEALTH_PATH = path.join(MEMORY_PATH, 'health');
 
-// Kira's remote config (Windows PC via Tailscale)
-const KIRA_SSH_HOST = 'adami@100.117.33.89';
-const KIRA_BASE_PATH = 'C:\\Users\\adami\\kira';
-const KIRA_MEMORY_PATH = `${KIRA_BASE_PATH}\\memory`;
+/** Get base path for an agent */
+function agentBasePath(agentId: string): string {
+  return AGENT_BASES[agentId] || AGENT_BASES.finn;
+}
+
+/** Get memory path for an agent */
+function agentMemoryPath(agentId: string): string {
+  return path.join(agentBasePath(agentId), 'memory');
+}
+
+/** Get OpenClaw state path for an agent */
+function agentOpenClawPath(agentId: string): string {
+  if (agentId === 'finn') return path.join(os.homedir(), '.openclaw-finn');
+  return path.join(os.homedir(), '.openclaw');
+}
 
 app.use(cors());
 app.use(express.json());
@@ -483,28 +500,14 @@ async function withFileMutex<T>(agentId: string, fn: () => Promise<T>): Promise<
 
 /** Read tasks file content for an agent */
 async function readTasksFile(agentId: string): Promise<string> {
-  if (agentId === 'kira') {
-    const content = await sshReadFile('memory/tasks.md');
-    return content || '';
-  }
-  return fs.readFile(path.join(MEMORY_PATH, 'tasks.md'), 'utf-8').catch(() => '');
+  const tasksPath = path.join(agentMemoryPath(agentId), 'tasks.md');
+  return fs.readFile(tasksPath, 'utf-8').catch(() => '');
 }
 
 /** Write tasks file content for an agent */
 async function writeTasksFile(agentId: string, content: string): Promise<void> {
-  if (agentId === 'kira') {
-    await sshWriteFile('memory/tasks.md', content);
-    return;
-  }
-  await fs.writeFile(path.join(MEMORY_PATH, 'tasks.md'), content, 'utf-8');
-}
-
-/** Write a file to Kira's machine via SSH */
-async function sshWriteFile(relativePath: string, content: string): Promise<void> {
-  const winPath = `${KIRA_BASE_PATH}\\${relativePath.replace(/\//g, '\\\\')}`;
-  // Use PowerShell to write content via stdin pipe
-  const escaped = content.replace(/'/g, "''");
-  await sshExec(`powershell -Command "Set-Content -Path '${winPath}' -Value '${escaped}' -Encoding UTF8"`);
+  const tasksPath = path.join(agentMemoryPath(agentId), 'tasks.md');
+  await fs.writeFile(tasksPath, content, 'utf-8');
 }
 
 // GET /api/tasks/kanban — returns kanban columns
@@ -760,7 +763,8 @@ function parseCheckpoint(content: string) {
 
 // ─── Crons (from crons.json gateway + launchd plists) ───
 
-const FINN_LIVE_CRONS_PATH = path.join(os.homedir(), '.openclaw', 'cron', 'jobs.json');
+const FINN_LIVE_CRONS_PATH = path.join(agentOpenClawPath('finn'), 'cron', 'jobs.json');
+const KIRA_LIVE_CRONS_PATH = path.join(agentOpenClawPath('kira'), 'cron', 'jobs.json');
 const FINN_WORKSPACE_CRONS_PATH = path.join(AGENTS_BASE_PATH, 'crons.json');
 const LAUNCHD_PATH = path.join(SCRIPTS_PATH, 'launchd');
 
@@ -914,16 +918,10 @@ app.get('/api/agents/:agentId/crons', async (req, res) => {
     }
 
     if (agentId === 'kira') {
-      // Read live cron state from Kira's gateway via SSH
+      // Read live cron state from Kira's local jobs.json
       try {
-        const { stdout } = await execAsync(
-          'ssh adami@100.117.33.89 "type C:\\Users\\adami\\.openclaw\\cron\\jobs.json"',
-          { timeout: 15000 }
-        );
-
-        // Parse the SSH output (Windows 'type' command outputs the file content)
-        const kiraData = JSON.parse(stdout.trim());
-        const kiraJobs = Array.isArray(kiraData) ? kiraData : (kiraData.jobs || []);
+        const kiraData = await readJsonFile(KIRA_LIVE_CRONS_PATH);
+        const kiraJobs = readCronJobs(kiraData);
 
         for (const entry of kiraJobs) {
           const sched = cronEntrySchedule(entry);
@@ -952,14 +950,13 @@ app.get('/api/agents/:agentId/crons', async (req, res) => {
             lastError: entry.state?.lastError,
           });
         }
-      } catch (sshError) {
-        console.error('Failed to read Kira crons via SSH, using fallback:', sshError);
-        // Fallback: return empty list with error note
+      } catch (readError) {
+        console.error('Failed to read Kira crons:', readError);
         crons.push({
           id: 'kira-error',
           agentId: 'kira',
           name: 'Error Reading Kira Crons',
-          description: 'Could not connect to Kira via SSH. Check Tailscale connection.',
+          description: 'Could not read Kira cron jobs file.',
           schedule: { cron: '-', timezone: '-', humanReadable: 'N/A' },
           status: 'error',
           taskGroup: 'System',
@@ -984,50 +981,32 @@ app.post('/api/crons/:cronId/run', async (req, res) => {
     // Determine which agent this cron belongs to
     const isKiraCron = agentId === 'kira' || cronId.startsWith('kira-');
 
-    if (isKiraCron) {
-      // Trigger Kira cron via SSH
-      const cronUuid = cronId.replace('kira-', '');
-      const { stdout, stderr } = await execAsync(
-        `ssh adami@100.117.33.89 "openclaw cron run ${cronUuid}"`,
-        { timeout: 30000 }
-      );
+    // Both agents are local — resolve UUID and run via openclaw CLI
+    let cronUuid = isKiraCron ? cronId.replace('kira-', '') : cronId;
+    const jobsPath = isKiraCron ? KIRA_LIVE_CRONS_PATH : FINN_LIVE_CRONS_PATH;
 
-      res.json({
-        success: true,
-        cronId,
-        method: 'openclaw-gateway-ssh',
-        output: stdout.substring(0, 5000),
-        stderr: stderr ? stderr.substring(0, 2000) : undefined,
-        executedAt: new Date().toISOString(),
-      });
-    } else {
-      // Trigger Finn cron via local OpenClaw gateway
-      // First, find the UUID for this cron name from jobs.json
-      let cronUuid = cronId;
+    try {
+      const jobsData = await readJsonFile(jobsPath);
+      const jobs = readCronJobs(jobsData);
+      const match = jobs.find((j: any) => j.name === cronUuid || j.id === cronUuid);
+      if (match) {
+        cronUuid = match.id;
+      }
+    } catch { /* use cronId as-is, might already be a UUID */ }
 
-      try {
-        const jobsData = await readJsonFile(FINN_LIVE_CRONS_PATH);
-        const jobs = readCronJobs(jobsData);
-        const match = jobs.find((j: any) => j.name === cronId || j.id === cronId);
-        if (match) {
-          cronUuid = match.id;
-        }
-      } catch { /* use cronId as-is, might already be a UUID */ }
+    const { stdout, stderr } = await execAsync(
+      `openclaw cron run ${cronUuid}`,
+      { timeout: 120000 }
+    );
 
-      const { stdout, stderr } = await execAsync(
-        `export PATH="/Users/lume/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && openclaw cron run ${cronUuid}`,
-        { timeout: 120000 }
-      );
-
-      res.json({
-        success: true,
-        cronId,
-        method: 'openclaw-gateway',
-        output: stdout.substring(0, 5000),
-        stderr: stderr ? stderr.substring(0, 2000) : undefined,
-        executedAt: new Date().toISOString(),
-      });
-    }
+    res.json({
+      success: true,
+      cronId,
+      method: 'openclaw-gateway',
+      output: stdout.substring(0, 5000),
+      stderr: stderr ? stderr.substring(0, 2000) : undefined,
+      executedAt: new Date().toISOString(),
+    });
   } catch (error: any) {
     console.error('Cron run error:', error);
     res.json({
@@ -1106,8 +1085,8 @@ function parseGoalsFile(content: string, agentId: string) {
 app.get('/api/goals', async (req, res) => {
   try {
     const [finnContent, kiraContent] = await Promise.all([
-      readMdFile(path.join(MEMORY_PATH, 'goals.md')),
-      sshReadFile('memory/goals.md').catch(() => null),
+      readMdFile(path.join(agentMemoryPath('finn'), 'goals.md')),
+      readMdFile(path.join(agentMemoryPath('kira'), 'goals.md')),
     ]);
     const finnGoals = finnContent ? parseGoalsFile(finnContent, 'finn') : [];
     const kiraGoals = kiraContent ? parseGoalsFile(kiraContent, 'kira') : [];
@@ -1304,8 +1283,8 @@ function parseMissionsFile(content: string, agentId: string) {
 app.get('/api/missions', async (req, res) => {
   try {
     const [finnContent, kiraContent] = await Promise.all([
-      readMdFile(path.join(MEMORY_PATH, 'missions.md')),
-      sshReadFile('memory/missions.md').catch(() => null),
+      readMdFile(path.join(agentMemoryPath('finn'), 'missions.md')),
+      readMdFile(path.join(agentMemoryPath('kira'), 'missions.md')),
     ]);
     const finnMissions = finnContent ? parseMissionsFile(finnContent, 'finn') : [];
     const kiraMissions = kiraContent ? parseMissionsFile(kiraContent, 'kira') : [];
@@ -1332,23 +1311,8 @@ app.get('/api/quick-actions', async (req, res) => {
 
 // Helper: resolve a cron name to its UUID from jobs.json
 async function resolveCronId(cronName: string, agent?: string): Promise<string> {
-  let rawJson: string;
-
-  if (agent === 'kira') {
-    // Read Kira's jobs.json via SSH from Windows
-    const sshResult = await execFileAsync('ssh', [
-      '-o', 'ConnectTimeout=10',
-      KIRA_SSH_HOST,
-      'type C:\\Users\\adami\\.openclaw\\cron\\jobs.json'
-    ], {
-      timeout: 15000,
-      env: { ...process.env, HOME: process.env.HOME || '/Users/lume' },
-    });
-    rawJson = sshResult.stdout;
-  } else {
-    // Read Finn's jobs.json locally
-    rawJson = await fs.readFile('/Users/lume/.openclaw/cron/jobs.json', 'utf-8');
-  }
+  const jobsPath = agent === 'kira' ? KIRA_LIVE_CRONS_PATH : FINN_LIVE_CRONS_PATH;
+  const rawJson = await fs.readFile(jobsPath, 'utf-8');
 
   const data = JSON.parse(rawJson);
   const jobs = data?.jobs || [];
@@ -1388,26 +1352,12 @@ app.post('/api/quick-actions/:actionId/execute', async (req, res) => {
       const cronId = await resolveCronId(action.cronName, action.agent);
 
       // Fire-and-forget: spawn cron run in background, don't wait for completion
-      if (action.agent === 'kira') {
-        const child = spawn('ssh', [
-          '-o', 'ConnectTimeout=10',
-          KIRA_SSH_HOST,
-          `openclaw cron run --timeout 300000 ${cronId}`
-        ], {
-          detached: true,
-          stdio: 'ignore',
-          env: { ...process.env, HOME: process.env.HOME || '/Users/lume' },
-        });
-        child.unref();
-      } else {
-        const child = spawn('/Users/lume/.npm-global/bin/openclaw', ['cron', 'run', '--timeout', '300000', cronId], {
-          detached: true,
-          stdio: 'ignore',
-          cwd: AGENTS_BASE_PATH,
-          env: { ...process.env, HOME: process.env.HOME || '/Users/lume', PATH: '/Users/lume/.npm-global/bin:/usr/local/bin:/usr/bin:/bin' },
-        });
-        child.unref();
-      }
+      const child = spawn('openclaw', ['cron', 'run', '--timeout', '300000', cronId], {
+        detached: true,
+        stdio: 'ignore',
+        cwd: agentBasePath(action.agent || 'finn'),
+      });
+      child.unref();
 
       // Return immediately — cron runs asynchronously
       return res.json({
@@ -1424,10 +1374,11 @@ app.post('/api/quick-actions/:actionId/execute', async (req, res) => {
         return res.status(400).json({ error: 'Action has no script path' });
       }
 
-      const scriptFullPath = path.join(AGENTS_BASE_PATH, action.scriptPath);
+      const actionBase = agentBasePath(action.agent || 'finn');
+      const scriptFullPath = path.join(actionBase, action.scriptPath);
 
       // Security: verify path is within workspace
-      if (!scriptFullPath.startsWith(AGENTS_BASE_PATH)) {
+      if (!scriptFullPath.startsWith(actionBase)) {
         return res.status(403).json({ error: 'Access denied' });
       }
 
@@ -1453,8 +1404,7 @@ app.post('/api/quick-actions/:actionId/execute', async (req, res) => {
 
       const result = await execFileAsync(command, args, {
         timeout: 60000,
-        cwd: AGENTS_BASE_PATH,
-        env: { ...process.env, HOME: process.env.HOME || '/Users/lume' },
+        cwd: actionBase,
       });
       stdout = result.stdout;
       stderr = result.stderr || undefined;
@@ -1502,12 +1452,34 @@ app.get('/api/system-info', async (req, res) => {
     const cronCount = cronJobs.length;
     const tokenStatus = tokenStatusContent ? parseTokenStatus(tokenStatusContent) : null;
 
-    // Check Kira connectivity
+    // Check Kira connectivity — both agents are local now, check if gateway responds
     let kiraOnline = false;
     try {
-      const kiraTest = await sshExec('echo ok');
-      kiraOnline = kiraTest.trim() === 'ok';
+      const kiraJobsExist = await fs.stat(KIRA_LIVE_CRONS_PATH).catch(() => null);
+      kiraOnline = kiraJobsExist !== null;
     } catch { /* offline */ }
+
+    // Count Kira's memory files, skills, scripts
+    let kiraMemoryCount = 0;
+    let kiraSkillCount = 0;
+    let kiraScriptCount = 0;
+    let kiraCronCount = 0;
+    try {
+      const kiraMemFiles = await getAllFilesRecursive(agentMemoryPath('kira'), { excludeArchive: true });
+      kiraMemoryCount = kiraMemFiles.length;
+    } catch { /* skip */ }
+    try {
+      const kiraSkillEntries = await fs.readdir(path.join(agentBasePath('kira'), 'skills'), { withFileTypes: true });
+      kiraSkillCount = kiraSkillEntries.filter((e: any) => e.isDirectory?.()).length;
+    } catch { /* skip */ }
+    try {
+      const kiraScriptEntries = await fs.readdir(path.join(agentBasePath('kira'), 'scripts'));
+      kiraScriptCount = kiraScriptEntries.filter(f => f.endsWith('.ps1') || f.endsWith('.py') || f.endsWith('.sh')).length;
+    } catch { /* skip */ }
+    try {
+      const kiraJobsData = await readJsonFile(KIRA_LIVE_CRONS_PATH);
+      kiraCronCount = readCronJobs(kiraJobsData).length;
+    } catch { /* skip */ }
 
     res.json({
       agents: [
@@ -1517,7 +1489,7 @@ app.get('/api/system-info', async (req, res) => {
           emoji: '\u{1F98A}',
           status: 'online',
           model: tokenStatus?.model || 'Claude Opus 4.5',
-          platform: 'macOS (Tailscale VM)',
+          platform: 'Windows PC (RexIII)',
           features: ['chat', 'memory', 'crons', 'skills', 'health', 'location'],
           stats: { memoryFiles: memoryFiles.length, scripts: scriptCount, skills: skillCount, crons: cronCount },
         },
@@ -1527,9 +1499,9 @@ app.get('/api/system-info', async (req, res) => {
           emoji: '\u{1F989}',
           status: kiraOnline ? 'online' : 'offline',
           model: 'Kimi / Qwen 2.5 7B',
-          platform: 'Windows PC (Tailscale)',
+          platform: 'Windows PC (RexIII)',
           features: ['chat', 'memory', 'crons', 'skills', 'supervision'],
-          stats: { crons: 18, skills: 0, scripts: 0, memoryFiles: 0 },
+          stats: { crons: kiraCronCount, skills: kiraSkillCount, scripts: kiraScriptCount, memoryFiles: kiraMemoryCount },
         },
       ],
       infrastructure: {
@@ -1722,7 +1694,7 @@ app.get('/api/dashboard', async (req, res) => {
       mealPlanContent, frictionContent,
       // Crons, goals, missions, quick actions (also read below for re-use)
       , , , ,
-      // Kira goals/missions via SSH
+      // Kira goals/missions (local)
       kiraGoalsContent, kiraMissionsContent,
     ] = await Promise.all([
       fs.readdir(HEALTH_PATH).catch(() => []),
@@ -1743,12 +1715,12 @@ app.get('/api/dashboard', async (req, res) => {
       readJsonFile(path.join(MEMORY_PATH, 'current-mode.json')),
       readJsonFile(path.join(MEMORY_PATH, 'ideas.json')),
       readMdFile(path.join(MEMORY_PATH, 'system', 'token-status.md')),
-      readJsonFile(path.join(MEMORY_PATH, 'finance', 'daily-recap.json')), // Finance recap data
-      readJsonFile(path.join(MEMORY_PATH, 'health', 'oura-data.json')), // Oura health data
-      readJsonFile(path.join(MEMORY_PATH, 'finance', 'net-worth-history.json')), // Net worth tracking
-      readJsonFile(path.join(MEMORY_PATH, 'finance', 'ai-cost-history.json')), // AI cost tracking
-      readJsonFile(path.join(MEMORY_PATH, 'finance', 'spending-alerts.json')), // Spending alerts
-      readJsonFile(path.join(MEMORY_PATH, 'finance', 'bank-balances.json')), // Bank balances
+      readJsonFile(path.join(MEMORY_PATH, 'finance', 'daily-recap.json')),
+      readJsonFile(path.join(MEMORY_PATH, 'health', 'oura-data.json')),
+      readJsonFile(path.join(MEMORY_PATH, 'finance', 'net-worth-history.json')),
+      readJsonFile(path.join(MEMORY_PATH, 'finance', 'ai-cost-history.json')),
+      readJsonFile(path.join(MEMORY_PATH, 'finance', 'spending-alerts.json')),
+      readJsonFile(path.join(MEMORY_PATH, 'finance', 'bank-balances.json')),
       readMdFile(path.join(MEMORY_PATH, 'meal-plan-current.md')),
       readMdFile(path.join(MEMORY_PATH, 'friction-points.md')),
       // Crons, goals, missions, quick actions
@@ -1756,9 +1728,9 @@ app.get('/api/dashboard', async (req, res) => {
       readMdFile(path.join(MEMORY_PATH, 'goals.md')),
       readMdFile(path.join(MEMORY_PATH, 'missions.md')),
       readJsonFile(path.join(MEMORY_PATH, 'quick-actions.json')),
-      // Kira goals/missions via SSH
-      sshReadFile('memory/goals.md').catch(() => null),
-      sshReadFile('memory/missions.md').catch(() => null),
+      // Kira goals/missions (local)
+      readMdFile(path.join(agentMemoryPath('kira'), 'goals.md')),
+      readMdFile(path.join(agentMemoryPath('kira'), 'missions.md')),
     ]);
 
     // Destructure newly added items
@@ -2119,48 +2091,63 @@ app.get('/api/dashboard', async (req, res) => {
 
 app.get('/api/dashboard/kira', async (req, res) => {
   try {
+    const kiraBase = agentBasePath('kira');
+    const kiraMemory = agentMemoryPath('kira');
+
     // ── Dynamic file discovery: latest daily reflection & P0 alert ──
-    const [reflectionFiles, p0Files] = await Promise.all([
-      sshExec('dir /b "C:\\Users\\adami\\kira\\memory\\daily-reflections"').catch(() => ''),
-      sshExec('dir /b "C:\\Users\\adami\\kira\\memory\\p0-alert-*"').catch(() => ''),
-    ]);
+    let latestReflection: string | null = null;
+    let latestP0: string | null = null;
+    try {
+      const reflectionList = (await fs.readdir(path.join(kiraMemory, 'daily-reflections')).catch(() => []))
+        .filter(f => f.endsWith('.md')).sort();
+      latestReflection = reflectionList.length > 0 ? reflectionList[reflectionList.length - 1] : null;
+    } catch { /* skip */ }
+    try {
+      const allMemFiles = await fs.readdir(kiraMemory).catch(() => []);
+      const p0List = allMemFiles.filter(f => f.startsWith('p0-alert-') && f.endsWith('.md')).sort();
+      latestP0 = p0List.length > 0 ? p0List[p0List.length - 1] : null;
+    } catch { /* skip */ }
 
-    // Find latest daily reflection (sorted alphabetically = chronologically with YYYY-MM-DD names)
-    const reflectionList = reflectionFiles.trim().split(/\r?\n/).filter(f => f.endsWith('.md')).sort();
-    const latestReflection = reflectionList.length > 0 ? reflectionList[reflectionList.length - 1] : null;
+    /** Read a file from Kira's local workspace */
+    async function readKiraFile(relativePath: string): Promise<string | null> {
+      try {
+        const content = await fs.readFile(path.join(kiraBase, relativePath), 'utf-8');
+        return content.trim() || null;
+      } catch {
+        return null;
+      }
+    }
 
-    // Find latest P0 alert
-    const p0List = p0Files.trim().split(/\r?\n/).filter(f => f.endsWith('.md')).sort();
-    const latestP0 = p0List.length > 0 ? p0List[p0List.length - 1] : null;
-
-    // Read ALL key files from Kira's machine in parallel
+    // Read ALL key files from Kira's local workspace in parallel
     const [
       checkpointRaw, tasksRaw, performanceRaw, cronReportRaw,
       syncStatusRaw, healthLogRaw, morningCheckRaw,
       finnMoodRaw, finnCronHealthRaw, workloadRaw,
       qaLogRaw, dreamsRaw, dailyReflectionRaw,
       finnTrackingRaw, p0AlertRaw, allMemoryFiles,
-      skillEntries, scriptEntries,
+      skillEntriesRaw, scriptEntriesRaw,
     ] = await Promise.all([
-      sshReadFile('memory/checkpoint.md'),
-      sshReadFile('memory/tasks.md'),
-      sshReadFile('memory/kira-performance.md'),
-      sshReadFile('memory/cron-report.md'),
-      sshReadFile('memory/sync-status.md'),
-      sshReadFile('memory/health-log.md'),
-      sshReadFile('memory/morning-systems-check.md'),
-      sshReadFile('memory/finn-mood.md'),
-      sshReadFile('memory/finn-cron-health.md'),
-      sshReadFile('memory/workload.md'),
-      sshReadFile('memory/qa-log.md'),
-      sshReadFile('memory/dreams.md'),
-      latestReflection ? sshReadFile(`memory/daily-reflections/${latestReflection}`) : Promise.resolve(null),
-      sshReadFile('memory/finn-tracking/performance-dashboard.md'),
-      latestP0 ? sshReadFile(`memory/${latestP0}`) : Promise.resolve(null),
-      getKiraRemoteMemoryFiles().catch(() => []),
-      sshExec('dir /b "C:\\Users\\adami\\kira\\skills"').catch(() => ''),
-      sshExec('dir /b "C:\\Users\\adami\\kira\\scripts"').catch(() => ''),
+      readKiraFile('memory/checkpoint.md'),
+      readKiraFile('memory/tasks.md'),
+      readKiraFile('memory/kira-performance.md'),
+      readKiraFile('memory/cron-report.md'),
+      readKiraFile('memory/sync-status.md'),
+      readKiraFile('memory/health-log.md'),
+      readKiraFile('memory/morning-systems-check.md'),
+      readKiraFile('memory/finn-mood.md'),
+      readKiraFile('memory/finn-cron-health.md'),
+      readKiraFile('memory/workload.md'),
+      readKiraFile('memory/qa-log.md'),
+      readKiraFile('memory/dreams.md'),
+      latestReflection ? readKiraFile(`memory/daily-reflections/${latestReflection}`) : Promise.resolve(null),
+      readKiraFile('memory/finn-tracking/performance-dashboard.md'),
+      latestP0 ? readKiraFile(`memory/${latestP0}`) : Promise.resolve(null),
+      getKiraLocalMemoryFiles().catch(() => []),
+      fs.readdir(path.join(kiraBase, 'skills'), { withFileTypes: true }).catch(() => []),
+      fs.readdir(path.join(kiraBase, 'scripts')).catch(() => []),
     ]);
+    const skillEntries = skillEntriesRaw;
+    const scriptEntries = scriptEntriesRaw;
 
     // Parse Kira's checkpoint
     const checkpoint = checkpointRaw ? {
@@ -2176,15 +2163,19 @@ app.get('/api/dashboard/kira', async (req, res) => {
     const cronHealth = performanceRaw ? parseKiraPerformance(performanceRaw) : null;
 
     // ── Build Kira's skill list from skill directories ──
-    const skillDirNames = skillEntries ? skillEntries.trim().split(/\r?\n/).filter(Boolean) : [];
-    const scriptFiles = scriptEntries ? scriptEntries.trim().split(/\r?\n/).filter(f => f.endsWith('.ps1') || f.endsWith('.py') || f.endsWith('.sh')) : [];
+    const skillDirNames = Array.isArray(skillEntries)
+      ? (skillEntries as any[]).filter((e: any) => e.isDirectory?.()).map((e: any) => e.name)
+      : [];
+    const scriptFiles = Array.isArray(scriptEntries)
+      ? (scriptEntries as string[]).filter(f => f.endsWith('.ps1') || f.endsWith('.py') || f.endsWith('.sh'))
+      : [];
     const skillCount = skillDirNames.length;
     const scriptCount = scriptFiles.length;
 
     // Read SKILL.md from each skill directory
     const skillDocs = await Promise.all(
       skillDirNames.map(name =>
-        sshReadFile(`skills/${name}/SKILL.md`).catch(() => null)
+        readKiraFile(`skills/${name}/SKILL.md`).catch(() => null)
       )
     );
 
@@ -2315,14 +2306,6 @@ app.get('/api/dashboard/kira', async (req, res) => {
   }
 });
 
-/** Read a single file from Kira's machine via SSH */
-async function sshReadFile(relativePath: string): Promise<string | null> {
-  const winPath = `${KIRA_BASE_PATH}\\${relativePath.replace(/\//g, '\\\\')}`;
-  const raw = await sshExec(`type "${winPath}"`);
-  // Normalize Windows CRLF to Unix LF for parser compatibility
-  const content = raw.split(String.fromCharCode(13, 10)).join(String.fromCharCode(10));
-  return content.trim() || null;
-}
 
 /** Parse Kira's checkpoint markdown */
 function parseKiraCheckpoint(content: string) {
@@ -2595,7 +2578,7 @@ app.get('/api/agents/:agentId/memory', async (req, res) => {
   try {
     const { agentId } = req.params;
     if (agentId === 'kira') {
-      const files = await getKiraRemoteMemoryCategories();
+      const files = await getKiraLocalMemoryCategories();
       return res.json({ files });
     }
     const files = await getAgentMemoryFiles(agentId);
@@ -2612,18 +2595,28 @@ app.get('/api/files/{*filePath}', async (req, res) => {
     const segments = req.params.filePath;
     const filePath = Array.isArray(segments) ? segments.join('/') : segments;
 
-    // Route kira-remote/ paths to Windows PC via SSH
+    // Route kira-remote/ paths to Kira's local workspace
     if (filePath.startsWith('kira-remote/')) {
-      const remote = await readKiraRemoteFile(filePath);
-      if (!remote.content) {
-        return res.status(404).json({ error: 'File not found on remote' });
+      const relPath = filePath.replace(/^kira-remote\//, '');
+      const fullPath = path.join(agentBasePath('kira'), relPath);
+
+      // Security: ensure path is within Kira's workspace
+      if (!fullPath.startsWith(agentBasePath('kira'))) {
+        return res.status(403).json({ error: 'Access denied' });
       }
-      return res.json({
-        path: filePath,
-        content: remote.content,
-        lastModified: remote.lastModified,
-        size: remote.size,
-      });
+
+      try {
+        const content = await fs.readFile(fullPath, 'utf-8');
+        const stats = await fs.stat(fullPath);
+        return res.json({
+          path: filePath,
+          content,
+          lastModified: stats.mtime,
+          size: stats.size,
+        });
+      } catch {
+        return res.status(404).json({ error: 'File not found' });
+      }
     }
 
     const fullPath = path.join(AGENTS_BASE_PATH, filePath);
@@ -2689,7 +2682,7 @@ app.get('/api/dna', async (req, res) => {
     const agent = req.query.agent as string | undefined;
 
     if (agent === 'kira') {
-      const kiraFiles = await getKiraRemoteDNAFiles();
+      const kiraFiles = await getKiraLocalDNAFiles();
       return res.json({ files: kiraFiles });
     }
 
@@ -2721,7 +2714,7 @@ app.get('/api/agents/:agentId/stats', async (req, res) => {
   try {
     const { agentId } = req.params;
     if (agentId === 'kira') {
-      const kiraFiles = await getKiraRemoteMemoryFiles();
+      const kiraFiles = await getKiraLocalMemoryFiles();
       return res.json({
         memoryCount: kiraFiles.length,
         cronCount: 0,
@@ -2748,62 +2741,55 @@ app.get('/api/agents/:agentId/stats', async (req, res) => {
   }
 });
 
-// ─── SSH helpers for Kira's remote files ───
+// ─── Kira local file helpers ───
 
-async function sshExec(command: string): Promise<string> {
+async function getKiraLocalMemoryFiles(): Promise<string[]> {
+  const kiraMemory = agentMemoryPath('kira');
+  const results: string[] = [];
+  await walkKiraDir(kiraMemory, 'kira-remote/memory', results);
+  return results;
+}
+
+async function walkKiraDir(dir: string, relPrefix: string, results: string[]): Promise<void> {
   try {
-    const { stdout } = await execFileAsync('ssh', [
-      '-o', 'ConnectTimeout=5',
-      '-o', 'StrictHostKeyChecking=no',
-      '-o', 'BatchMode=yes',
-      KIRA_SSH_HOST,
-      command,
-    ], { timeout: 10000 });
-    return stdout;
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const relPath = `${relPrefix}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (entry.name === '_archive') continue;
+        await walkKiraDir(path.join(dir, entry.name), relPath, results);
+      } else if (entry.isFile() && entry.name.endsWith('.md')) {
+        results.push(relPath);
+      }
+    }
+  } catch { /* skip */ }
+}
+
+async function getKiraLocalDNAFiles(): Promise<Array<{ id: string; name: string; path: string; lastModified: Date; size: number }>> {
+  const kiraBase = agentBasePath('kira');
+  try {
+    const entries = await fs.readdir(kiraBase, { withFileTypes: true });
+    const mdFiles = entries.filter(e => e.isFile() && e.name.endsWith('.md'));
+    return Promise.all(mdFiles.map(async (entry) => {
+      const fullPath = path.join(kiraBase, entry.name);
+      const stats = await fs.stat(fullPath);
+      return {
+        id: `kira-dna-${entry.name.replace('.md', '').toLowerCase()}`,
+        name: entry.name,
+        path: `kira-remote/${entry.name}`,
+        lastModified: stats.mtime,
+        size: stats.size,
+      };
+    }));
   } catch {
-    return '';
+    return [];
   }
 }
 
-async function getKiraRemoteMemoryFiles(): Promise<string[]> {
-  const output = await sshExec(`dir /s /b "${KIRA_MEMORY_PATH}\\*.md"`);
-  if (!output.trim()) return [];
-  return output.trim().split('\r\n').filter(Boolean).map(line => {
-    const rel = line.replace(/\\/g, '/').replace(/^.*?kira\//, '');
-    return `kira-remote/${rel}`;
-  });
-}
+// ─── Kira local memory categories ───
 
-async function getKiraRemoteDNAFiles(): Promise<Array<{ id: string; name: string; path: string; lastModified: Date; size: number }>> {
-  const output = await sshExec(`dir /b "${KIRA_BASE_PATH}\\*.md"`);
-  if (!output.trim()) return [];
-  const fileNames = output.trim().split('\r\n').filter(Boolean);
-  const files = await Promise.all(fileNames.map(async (name) => {
-    const sizeOutput = await sshExec(`for %I in ("${KIRA_BASE_PATH}\\${name}") do @echo %~zI|%~tI`);
-    const parts = sizeOutput.trim().split('|');
-    const size = parseInt(parts[0]) || 0;
-    return {
-      id: `kira-dna-${name.replace('.md', '').toLowerCase()}`,
-      name,
-      path: `kira-remote/${name}`,
-      lastModified: new Date(),
-      size,
-    };
-  }));
-  return files;
-}
-
-async function readKiraRemoteFile(remotePath: string): Promise<{ content: string; size: number; lastModified: Date }> {
-  const relPath = remotePath.replace(/^kira-remote\//, '');
-  const winPath = `${KIRA_BASE_PATH}\\${relPath.replace(/\//g, '\\\\')}`;
-  const content = await sshExec(`type "${winPath}"`);
-  return { content, size: Buffer.byteLength(content, 'utf-8'), lastModified: new Date() };
-}
-
-// ─── Kira remote memory categories ───
-
-async function getKiraRemoteMemoryCategories() {
-  const allFiles = await getKiraRemoteMemoryFiles();
+async function getKiraLocalMemoryCategories() {
+  const allFiles = await getKiraLocalMemoryFiles();
 
   const groups: Record<string, string[]> = {};
   for (const f of allFiles) {
@@ -2826,14 +2812,27 @@ async function getKiraRemoteMemoryCategories() {
     const categoryName = key === '_root' ? 'Root' : prettyCategoryName(key.split('/').pop()!);
     const categoryId = key === '_root' ? 'kira-root' : `kira-${key.replace(/\//g, '-')}`;
     const type = key === '_root' ? 'long-term' : 'reference';
-    const files = groups[key].map(filePath => ({
-      id: filePath.replace(/[\/\\.]/g, '-'),
-      path: filePath,
-      name: path.basename(filePath),
-      type,
-      size: 0,
-      lastModified: new Date(),
+
+    const files = await Promise.all(groups[key].map(async (filePath) => {
+      const relPath = filePath.replace(/^kira-remote\//, '');
+      const fullPath = path.join(agentBasePath('kira'), relPath);
+      let size = 0;
+      let lastModified = new Date();
+      try {
+        const stats = await fs.stat(fullPath);
+        size = stats.size;
+        lastModified = stats.mtime;
+      } catch { /* skip */ }
+      return {
+        id: filePath.replace(/[\/\\.]/g, '-'),
+        path: filePath,
+        name: path.basename(filePath),
+        type,
+        size,
+        lastModified,
+      };
     }));
+
     if (files.length > 0) {
       categories.push({ id: categoryId, name: categoryName, type, count: files.length, files });
     }
@@ -2850,6 +2849,13 @@ async function getAllMemoryFilesRecursive(opts?: { excludeArchive?: boolean }): 
   const results: string[] = [];
   await walkDir(MEMORY_PATH, 'memory', results, opts);
   return results.sort();
+}
+
+/** Generic recursive file listing for any directory */
+async function getAllFilesRecursive(dir: string, opts?: { excludeArchive?: boolean }): Promise<string[]> {
+  const results: string[] = [];
+  await walkDir(dir, '', results, opts);
+  return results;
 }
 
 async function walkDir(dir: string, relPrefix: string, results: string[], opts?: { excludeArchive?: boolean }): Promise<void> {
