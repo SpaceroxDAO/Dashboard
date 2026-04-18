@@ -1488,7 +1488,7 @@ app.get('/api/system-info', async (req, res) => {
           name: 'Finn',
           emoji: '\u{1F98A}',
           status: 'online',
-          model: tokenStatus?.model || 'Claude Opus 4.5',
+          model: tokenStatus?.model || 'Kimi K2.5',
           platform: 'Windows PC (RexIII)',
           features: ['chat', 'memory', 'crons', 'skills', 'health', 'location'],
           stats: { memoryFiles: memoryFiles.length, scripts: scriptCount, skills: skillCount, crons: cronCount },
