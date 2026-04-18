@@ -10,11 +10,9 @@ import { Card, Badge } from '@/components/ui';
 import { agentsAtom, connectionStatusAtom } from '@/store/atoms';
 import type { SystemInfoResponse } from '@/services/api';
 
-const API_BASE = import.meta.env.VITE_API_URL || (
-  import.meta.env.PROD
-    ? 'https://rexiii.tailf846b2.ts.net/dashboard-api'
-    : 'http://localhost:3001'
-);
+const API_BASE = import.meta.env.DEV
+  ? 'http://localhost:3001'
+  : 'https://rexiii.tailf846b2.ts.net/dashboard-api';
 
 export function SettingsPage() {
   const [agents] = useAtom(agentsAtom);
