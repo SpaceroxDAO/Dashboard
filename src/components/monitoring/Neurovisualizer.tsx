@@ -89,13 +89,24 @@ export function Neurovisualizer({ height = 192 }: NeurovisualizerProps) {
   const [eventCount, setEventCount] = useState(0);
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
   const [, setTick] = useState(0); // re-render every second to update "Xs ago"
+  // Mirror lastEventAt into a ref so the render loop's stale closure can read it
+  const lastEventAtRef = useRef<number | null>(null);
 
-  // SSE: collect events as cortex reactions
+  // SSE: collect events as cortex reactions. The /api/live endpoint sends a
+  // backfill burst on connect (~80 historical events from the last hour) — we
+  // discard those for visualization, otherwise the cortex looks active when
+  // Finn isn't actually doing anything. Only events whose own `timestamp` is
+  // within LIVE_WINDOW_MS of "now" trigger a reaction. The eventCount /
+  // lastEventAt meter follows the same rule so it stays honest.
+  const LIVE_WINDOW_MS = 30_000;
   useEffect(() => {
     const es = new EventSource(getSSEUrl(agentId));
     es.addEventListener('message', (ev) => {
       try {
         const data = JSON.parse((ev as MessageEvent).data);
+        // Reject backfill / historical replays
+        const eventMs = data.timestamp ? new Date(data.timestamp).getTime() : 0;
+        if (!eventMs || Date.now() - eventMs > LIVE_WINDOW_MS) return;
         const r = reactionFor(data);
         if (r) {
           reactionsRef.current.push(r);
@@ -103,7 +114,9 @@ export function Neurovisualizer({ height = 192 }: NeurovisualizerProps) {
             reactionsRef.current = reactionsRef.current.slice(-100);
           }
           setEventCount(c => c + 1);
-          setLastEventAt(Date.now());
+          const t = Date.now();
+          setLastEventAt(t);
+          lastEventAtRef.current = t;
         }
       } catch { /* skip */ }
     });
@@ -169,6 +182,15 @@ export function Neurovisualizer({ height = 192 }: NeurovisualizerProps) {
         }
       }
 
+      // Global aliveness — drives the ambient ripple/border animation. Drops
+      // toward 0 when Finn is idle so the cortex visibly rests instead of
+      // pretending to react. Boosted by recent reactions and recent SSE events.
+      const lea = lastEventAtRef.current;
+      const recentEventBoost = lea ? Math.max(0, 1 - (now - lea) / 8000) : 0;
+      const reactionBoost = Math.min(1, reactionsRef.current.length / 3);
+      const alive = Math.max(recentEventBoost, reactionBoost); // 0 = idle, 1 = active
+      const ambientLevel = 0.05 + alive * 0.95; // never fully zero — keep a faint heartbeat
+
       // Voronoi-cell tessellation
       for (let y = 0; y < h; y += STEP) {
         for (let x = 0; x < w; x += STEP) {
@@ -193,19 +215,22 @@ export function Neurovisualizer({ height = 192 }: NeurovisualizerProps) {
           const isError = act?.isError || false;
 
           if (edgeDist < 0.025) {
-            // Border cell — pulses with frame + cell-pair index
-            const pulse = Math.abs(Math.sin(f * 0.08 + i1 * 0.7));
+            // Border cell — only flickers when alive; static dim when idle
+            const pulse = ambientLevel * Math.abs(Math.sin(f * 0.08 + i1 * 0.7));
             const phase = (f * 0.005 + (i1 + i2) * 0.17) % 1;
-            ctx.fillStyle = hueColor(0.5 + 0.5 * pulse, phase, 0.55 + 0.45 * activity, isError);
+            const baseAlpha = 0.25 + 0.30 * ambientLevel;
+            ctx.fillStyle = hueColor(0.4 * ambientLevel + 0.5 * pulse, phase, baseAlpha + 0.45 * activity, isError);
             ctx.fillRect(x, y, STEP, STEP);
           } else {
             const dCenter = Math.sqrt(d1);
-            const ripple = (Math.sin(dCenter * 18 - f * 0.05) + 1) / 2;
+            // Slow the ripple wave when idle — ambient should breathe, not rush
+            const rippleSpeed = 0.05 * (0.2 + 0.8 * ambientLevel);
+            const ripple = (Math.sin(dCenter * 18 - f * rippleSpeed) + 1) / 2 * ambientLevel;
             const visible = ripple > 0.25 || activity > 0.1;
             if (visible) {
               const v = Math.max(ripple * 0.7, activity);
               const phase = (f * 0.004 + i1 * 0.16 + dCenter * 0.1) % 1;
-              ctx.fillStyle = hueColor(v, phase, 0.25 + 0.65 * Math.max(ripple - 0.25, activity), isError);
+              ctx.fillStyle = hueColor(v, phase, 0.20 * ambientLevel + 0.55 * Math.max(ripple - 0.25, activity), isError);
               ctx.fillRect(x, y, STEP, STEP);
             }
           }
@@ -220,7 +245,6 @@ export function Neurovisualizer({ height = 192 }: NeurovisualizerProps) {
         const m = MODULES[i];
         const px = m.x * w;
         const py = m.y * h;
-        const pulse = 0.4 + 0.6 * Math.abs(Math.sin(f * 0.06 + i * 0.7));
         const act = moduleActivity[m.name];
         const activity = act?.intensity || 0;
         const isError = act?.isError || false;
@@ -242,10 +266,12 @@ export function Neurovisualizer({ height = 192 }: NeurovisualizerProps) {
         // Drop shadow against the warm background
         ctx.fillStyle = 'rgba(0,0,0,0.75)';
         ctx.fillText(label, px + 1, py + 1);
-        // Active: text-bright cream / Error: light red / Idle: text-muted warm tan
+        // Labels: bright cream when this module is actively reacting, otherwise
+        // a static dim warm tan. No time-driven pulse — that gave the false
+        // impression of constant activity.
         ctx.fillStyle = activity > 0.4
           ? (isError ? '#fca5a5' : '#faf3e8')
-          : `rgba(176, 160, 138, ${0.55 + 0.45 * pulse})`;
+          : 'rgba(176, 160, 138, 0.55)';
         ctx.fillText(label, px, py);
       }
     };
