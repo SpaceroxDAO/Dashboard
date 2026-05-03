@@ -160,6 +160,59 @@ async function parseSessionFile(filePath: string): Promise<SessionCost | null> {
     let lastTimestamp = '';
     let firstDate = '';
 
+    // Detect Hermes flat JSONL format: lines have {role, content, timestamp} with no usage wrapper.
+    // First parseable line tells us which format we have.
+    let isHermesFormat = false;
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line);
+        if (obj.role && obj.content !== undefined && !obj.message) {
+          isHermesFormat = true;
+        }
+        break;
+      } catch { /* keep trying */ }
+    }
+
+    if (isHermesFormat) {
+      // Hermes JSONL: {role, content, timestamp}. No billing data — subscription plan.
+      // Count assistant turns; estimate tokens from content char length (~4 chars/token).
+      for (const line of lines) {
+        try {
+          const obj = JSON.parse(line);
+          const ts = obj.timestamp as string | undefined;
+          if (ts && !firstDate) firstDate = ts.slice(0, 10);
+          if (ts) lastTimestamp = ts;
+          if (obj.role === 'assistant') {
+            messageCount++;
+            const chars = typeof obj.content === 'string' ? obj.content.length : 0;
+            outputTokens += Math.round(chars / 4);
+          } else if (obj.role === 'user') {
+            const chars = typeof obj.content === 'string' ? obj.content.length : 0;
+            inputTokens += Math.round(chars / 4);
+          }
+          if (obj.model && obj.model !== '<synthetic>') model = obj.model;
+        } catch { /* skip malformed lines */ }
+      }
+      if (messageCount === 0) return null;
+      // Subscription plan — no per-token cost. Return early with zero cost.
+      model = model === 'unknown' ? 'gpt-5.5' : model;
+      const sessionId = path.basename(filePath, '.jsonl');
+      const project = path.basename(path.dirname(filePath));
+      return {
+        sessionId,
+        project,
+        model,
+        date: firstDate || new Date().toISOString().slice(0, 10),
+        inputTokens,
+        outputTokens,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        totalCost: 0,
+        cacheSavings: 0,
+        messageCount,
+        lastActivity: lastTimestamp,
+      };
+    } else {
     for (const line of lines) {
       try {
         const obj = JSON.parse(line);
@@ -183,6 +236,7 @@ async function parseSessionFile(filePath: string): Promise<SessionCost | null> {
     }
 
     if (messageCount === 0) return null;
+    } // end non-Hermes branch
 
     const pricing = getPricing(model);
     const totalCost =

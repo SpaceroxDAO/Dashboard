@@ -63,8 +63,63 @@ export function CostBreakdown() {
     .filter(([name]) => name !== 'unknown')
     .sort(([, a], [, b]) => b.tokens - a.tokens);
 
+  // Finn: subscription plan — GPT-5.5 via ChatGPT Pro, no per-token billing
+  const isFinnSubscriptionView = agentId === 'finn' && data.totalCost === 0;
+
   // Kira: token-centric view (free tier, totalCost is always 0)
   const isKiraTokenView = agentId === 'kira' && data.totalCost === 0 && data.totalInputTokens > 0;
+
+  if (isFinnSubscriptionView) {
+    const totalTokens = data.totalInputTokens + data.totalOutputTokens;
+    const totalMessages = data.recentSessions.reduce((s, r) => s + r.messageCount, 0);
+    return (
+      <Card>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-medium text-text-muted flex items-center gap-2">
+            <Zap className="w-4 h-4" /> Activity (30d)
+          </h3>
+          <Badge variant="info">ChatGPT Pro</Badge>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+          <div>
+            <div className="text-xl font-semibold text-text-bright">{data.recentSessions.length}</div>
+            <div className="text-xs text-text-dim">Sessions</div>
+          </div>
+          <div>
+            <div className="text-xl font-semibold text-text-bright">{totalMessages}</div>
+            <div className="text-xs text-text-dim">Messages</div>
+          </div>
+          <div>
+            <div className="text-xl font-semibold text-signal-online">{formatTokens(data.totalOutputTokens)}</div>
+            <div className="text-xs text-text-dim">Output est.</div>
+          </div>
+          <div>
+            <div className="text-xl font-semibold text-text-bright">{formatTokens(totalTokens)}</div>
+            <div className="text-xs text-text-dim">Total tokens est.</div>
+          </div>
+        </div>
+
+        {dailyValues.length >= 2 && (
+          <div className="mb-4">
+            <div className="text-xs text-text-dim mb-1">Daily tokens (estimated)</div>
+            <Sparkline data={dailyValues} height={40} />
+            <div className="flex justify-between text-[10px] text-text-dim mt-1">
+              <span>{dailyEntries[0]?.[0]?.slice(5)}</span>
+              <span>{dailyEntries[dailyEntries.length - 1]?.[0]?.slice(5)}</span>
+            </div>
+          </div>
+        )}
+
+        {data.recentSessions.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-6 text-text-dim text-sm">
+            <Zap className="w-8 h-8 mb-2 opacity-30" />
+            <p>No sessions yet</p>
+          </div>
+        )}
+      </Card>
+    );
+  }
 
   if (isKiraTokenView) {
     const totalTokens = data.totalInputTokens + data.totalOutputTokens;
