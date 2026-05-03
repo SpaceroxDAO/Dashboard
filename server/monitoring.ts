@@ -44,6 +44,12 @@ const AGENT_CONFIG: Record<AgentId, { basePath: string; sessionsPath: string; se
   },
 };
 
+// Hermes Neurovision event stream — single append-only JSONL the gateway writes
+// for every session/agent/tool event. This is what the Hermes terminal
+// neurovisualizer consumes, and it's a much cleaner live-feed source than
+// post-hoc parsing of session JSON files.
+const FINN_NEUROVISION_PATH = path.join(os.homedir(), '.hermes', 'neurovision', 'events.jsonl');
+
 
 function isValidAgent(agent: unknown): agent is AgentId {
   return agent === 'finn' || agent === 'kira';
@@ -460,7 +466,7 @@ function isFinnProjectDir(dirName: string): boolean {
   return dirName.startsWith(FINN_PROJECT_DIR_PREFIX);
 }
 
-async function tailFile(filePath: string, agent: AgentId, format: 'claude' | 'openclaw') {
+async function tailFile(filePath: string, agent: AgentId, format: 'claude' | 'openclaw' | 'hermes') {
   try {
     const stat = await fs.stat(filePath);
     const prevOffset = fileOffsets.get(filePath) || stat.size;
@@ -478,7 +484,9 @@ async function tailFile(filePath: string, agent: AgentId, format: 'claude' | 'op
 
     const newLines = buffer.toString('utf-8').trim().split('\n').filter(Boolean);
     for (const line of newLines) {
-      const events = parseFeedEvent(line, path.basename(filePath, '.jsonl'), format);
+      const events = format === 'hermes'
+        ? parseNeurovisionEvent(line)
+        : parseFeedEvent(line, path.basename(filePath, '.jsonl'), format);
       if (events) {
         for (const evt of events) broadcastSSE('message', evt, agent);
       }
@@ -487,27 +495,41 @@ async function tailFile(filePath: string, agent: AgentId, format: 'claude' | 'op
 }
 
 async function startFileWatching() {
-  // Watch both agents' session directories for real-time updates
-  for (const agent of ['finn', 'kira'] as AgentId[]) {
-    for (const dirPath of getSessionsPaths(agent)) {
-      try {
-        const files = await fs.readdir(dirPath);
-        for (const f of files) {
-          if (!f.endsWith('.jsonl')) continue;
-          const fPath = path.join(dirPath, f);
-          const fStat = await fs.stat(fPath);
-          fileOffsets.set(fPath, fStat.size);
-        }
+  // Finn → tail single Hermes neurovision events.jsonl. Watching the parent dir
+  // and matching the basename is more reliable than watching the file itself,
+  // which can break when the inode is replaced (rotation / atomic rewrite).
+  try {
+    const fStat = await fs.stat(FINN_NEUROVISION_PATH);
+    fileOffsets.set(FINN_NEUROVISION_PATH, fStat.size);
+    const dirPath = path.dirname(FINN_NEUROVISION_PATH);
+    const baseName = path.basename(FINN_NEUROVISION_PATH);
+    const watcher = watch(dirPath, async (_eventType, filename) => {
+      if (filename !== baseName) return;
+      if (sseClients.length === 0) return;
+      await tailFile(FINN_NEUROVISION_PATH, 'finn', 'hermes');
+    });
+    watchers.push(watcher);
+  } catch { /* neurovision file not yet created */ }
 
-        const watcher = watch(dirPath, async (eventType, filename) => {
-          if (!filename?.endsWith('.jsonl')) return;
-          if (sseClients.length === 0) return;
-          const fPath = path.join(dirPath, filename);
-          await tailFile(fPath, agent, 'openclaw');
-        });
-        watchers.push(watcher);
-      } catch { /* sessions dir not found */ }
-    }
+  // Kira → still on OpenClaw session JSONL files
+  for (const dirPath of getSessionsPaths('kira')) {
+    try {
+      const files = await fs.readdir(dirPath);
+      for (const f of files) {
+        if (!f.endsWith('.jsonl')) continue;
+        const fPath = path.join(dirPath, f);
+        const fStat = await fs.stat(fPath);
+        fileOffsets.set(fPath, fStat.size);
+      }
+
+      const watcher = watch(dirPath, async (_eventType, filename) => {
+        if (!filename?.endsWith('.jsonl')) return;
+        if (sseClients.length === 0) return;
+        const fPath = path.join(dirPath, filename);
+        await tailFile(fPath, 'kira', 'openclaw');
+      });
+      watchers.push(watcher);
+    } catch { /* sessions dir not found */ }
   }
 }
 
@@ -629,11 +651,26 @@ function summarizeToolArgs(toolName: string, args: any): string {
   try {
     switch (toolName) {
       case 'exec':
+      case 'terminal':
         return (args.command || '').slice(0, 100);
       case 'read':
       case 'write':
       case 'edit':
+      case 'read_file':
+      case 'write_file':
         return args.file_path || args.path || args.filePath || '';
+      case 'patch':
+        return `${args.mode || 'patch'} ${args.path || ''}`.trim();
+      case 'search_files':
+        return `${args.pattern || ''} in ${args.path || '.'}`.slice(0, 100);
+      case 'session_search':
+        return (args.query || '').slice(0, 100);
+      case 'memory':
+        return `${args.action || ''} ${args.target || ''}`.trim();
+      case 'skill_view':
+        return args.name || '';
+      case 'todo':
+        return Array.isArray(args.todos) ? `${args.todos.length} todos` : '';
       case 'message':
         return 'send to discord';
       case 'cron':
@@ -805,34 +842,148 @@ function parseFeedEvent(line: string, sessionId: string, format: 'claude' | 'ope
   } catch { return null; }
 }
 
-/** Send recent history from local JSONL session files to a newly connected SSE client. */
+/** Parse one line from ~/.hermes/neurovision/events.jsonl (Hermes' live event
+ *  stream — same source the terminal neurovisualizer consumes) into the
+ *  dashboard's FeedEvent shape. Schema:
+ *    { timestamp: <epoch float>, event_type: 'session:start'|'agent:start'|'agent:step'|'agent:end',
+ *      context: { platform, session_id, message?, response?, tools?: [{name, arguments, result}] } }
+ */
+function parseNeurovisionEvent(line: string): FeedEvent[] | null {
+  try {
+    const obj = JSON.parse(line);
+    const ts = obj.timestamp;
+    const evtType = obj.event_type;
+    const ctx = obj.context || {};
+    if (typeof ts !== 'number' || !evtType) return null;
+
+    const isoTs = new Date(ts * 1000).toISOString();
+    const sid = String(ctx.session_id || '').slice(0, 8);
+    const platform = String(ctx.platform || '');
+    const channel: ChannelType | undefined =
+      platform === 'telegram' ? 'telegram' :
+      platform === 'discord' ? 'discord' :
+      platform === 'cron' ? 'cron' :
+      platform === 'system' ? 'system' :
+      undefined;
+
+    const events: FeedEvent[] = [];
+
+    // User inbound message (start of a turn)
+    if (evtType === 'agent:start' && ctx.message) {
+      events.push({
+        type: 'user',
+        timestamp: isoTs,
+        sessionId: sid,
+        text: String(ctx.message).slice(0, 500),
+        channel,
+        sender: 'Adam',
+      });
+    }
+
+    // Assistant final reply (end of a turn). agent:end also echoes the
+    // inbound message but we already emitted that on agent:start.
+    if (evtType === 'agent:end' && ctx.response) {
+      events.push({
+        type: 'assistant',
+        timestamp: isoTs,
+        sessionId: sid,
+        text: String(ctx.response).slice(0, 500),
+      });
+    }
+
+    // Tool calls + results from each step. Hermes already pairs args with the
+    // result on the same step, so we emit a tool_call followed by a tool_result
+    // with the same iso timestamp.
+    if (evtType === 'agent:step' && Array.isArray(ctx.tools)) {
+      for (const tool of ctx.tools) {
+        if (!tool?.name) continue;
+        const parsedArgs = typeof tool.arguments === 'string'
+          ? safeJsonParseOrNull(tool.arguments)
+          : tool.arguments;
+        events.push({
+          type: 'tool_call',
+          timestamp: isoTs,
+          sessionId: sid,
+          toolName: tool.name,
+          toolArgs: summarizeToolArgs(tool.name, parsedArgs),
+        });
+        if (tool.result !== undefined) {
+          const parsedResult = typeof tool.result === 'string'
+            ? safeJsonParseOrNull(tool.result)
+            : tool.result;
+          const isError = parsedResult && typeof parsedResult === 'object' &&
+            (parsedResult.success === false || parsedResult.error);
+          events.push({
+            type: 'tool_result',
+            timestamp: isoTs,
+            sessionId: sid,
+            toolName: tool.name,
+            toolStatus: isError ? 'error' : 'completed',
+            toolError: isError && parsedResult.error
+              ? String(parsedResult.error).slice(0, 200)
+              : undefined,
+          });
+        }
+      }
+    }
+
+    return events.length > 0 ? events : null;
+  } catch { return null; }
+}
+
+function safeJsonParseOrNull(s: string): any {
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+/** Send recent history to a newly connected SSE client.
+ *  Finn → Hermes neurovision events.jsonl (single file, append-only)
+ *  Kira → OpenClaw session JSONL files in sessions dirs */
 async function backfillAgentFeed(agent: AgentId, res: Response) {
   try {
-    const allWithStats: Array<{ f: string; fPath: string; mtimeMs: number }> = [];
-    for (const dirPath of getSessionsPaths(agent)) {
-      try {
-        const files = await fs.readdir(dirPath);
-        const jsonlFiles = files.filter(f => f.endsWith('.jsonl'));
-        for (const f of jsonlFiles) {
-          const fPath = path.join(dirPath, f);
-          const fStat = await fs.stat(fPath);
-          allWithStats.push({ f, fPath, mtimeMs: fStat.mtimeMs });
-        }
-      } catch { /* dir may not exist */ }
-    }
-    allWithStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const recentEvents: FeedEvent[] = [];
 
-    const recentEvents: Array<FeedEvent> = [];
-    // Take last 10 lines from 3 most recent session files
-    for (const { f, fPath } of allWithStats.slice(0, 3)) {
-      const content = await fs.readFile(fPath, 'utf-8');
-      const lines = content.trim().split('\n');
-      for (const line of lines.slice(-10)) {
-        const events = parseFeedEvent(line, f.replace('.jsonl', ''), 'openclaw');
+    if (agent === 'finn') {
+      const content = await fs.readFile(FINN_NEUROVISION_PATH, 'utf-8').catch(() => '');
+      const lines = content.trim().split('\n').filter(Boolean);
+      // Take the last ~40 lines so the backfill includes a few full turns
+      for (const line of lines.slice(-40)) {
+        const events = parseNeurovisionEvent(line);
         if (events) {
           for (const evt of events) {
+            // Skip raw tool plumbing in backfill — the visible turn boundaries (user/assistant)
+            // give the user enough context on connect; tools then stream live as they happen.
             if (evt.type !== 'tool_call' && evt.type !== 'tool_result') {
               recentEvents.push(evt);
+            }
+          }
+        }
+      }
+    } else {
+      const allWithStats: Array<{ f: string; fPath: string; mtimeMs: number }> = [];
+      for (const dirPath of getSessionsPaths(agent)) {
+        try {
+          const files = await fs.readdir(dirPath);
+          const jsonlFiles = files.filter(f => f.endsWith('.jsonl'));
+          for (const f of jsonlFiles) {
+            const fPath = path.join(dirPath, f);
+            const fStat = await fs.stat(fPath);
+            allWithStats.push({ f, fPath, mtimeMs: fStat.mtimeMs });
+          }
+        } catch { /* dir may not exist */ }
+      }
+      allWithStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+      // Take last 10 lines from 3 most recent session files
+      for (const { f, fPath } of allWithStats.slice(0, 3)) {
+        const content = await fs.readFile(fPath, 'utf-8');
+        const lines = content.trim().split('\n');
+        for (const line of lines.slice(-10)) {
+          const events = parseFeedEvent(line, f.replace('.jsonl', ''), 'openclaw');
+          if (events) {
+            for (const evt of events) {
+              if (evt.type !== 'tool_call' && evt.type !== 'tool_result') {
+                recentEvents.push(evt);
+              }
             }
           }
         }
@@ -892,36 +1043,51 @@ router.get('/api/feed/recent', async (req: Request, res: Response) => {
 
     const events: FeedEvent[] = [];
 
-    // Both agents are local — read from their session directories
-    const allWithStats: Array<{ f: string; fPath: string; mtimeMs: number }> = [];
-    for (const dirPath of getSessionsPaths(agent)) {
-      try {
-        const files = await fs.readdir(dirPath);
-        const jsonlFiles = files.filter(f => f.endsWith('.jsonl'));
-        for (const f of jsonlFiles) {
-          const fPath = path.join(dirPath, f);
-          const fStat = await fs.stat(fPath);
-          allWithStats.push({ f, fPath, mtimeMs: fStat.mtimeMs });
-        }
-      } catch { /* dir not found */ }
-    }
-    allWithStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
-
-    // Read from the 5 most recently modified session files
-    for (const { f, fPath } of allWithStats.slice(0, 5)) {
-      try {
-        const content = await fs.readFile(fPath, 'utf-8');
-        const lines = content.trim().split('\n');
-        for (const line of lines) {
-          const parsed = parseFeedEvent(line, f.replace('.jsonl', ''), 'openclaw');
-          if (!parsed) continue;
-          for (const evt of parsed) {
-            if (evt.timestamp && new Date(evt.timestamp) >= cutoff) {
-              events.push(evt);
-            }
+    if (agent === 'finn') {
+      // Hermes neurovision events.jsonl is one append-only file. Read the tail
+      // (last ~2000 lines is plenty for a 24-hour window of a chatty agent).
+      const content = await fs.readFile(FINN_NEUROVISION_PATH, 'utf-8').catch(() => '');
+      const lines = content.trim().split('\n').filter(Boolean).slice(-2000);
+      for (const line of lines) {
+        const parsed = parseNeurovisionEvent(line);
+        if (!parsed) continue;
+        for (const evt of parsed) {
+          if (evt.timestamp && new Date(evt.timestamp) >= cutoff) {
+            events.push(evt);
           }
         }
-      } catch { /* skip unreadable file */ }
+      }
+    } else {
+      // Kira: still on OpenClaw session files
+      const allWithStats: Array<{ f: string; fPath: string; mtimeMs: number }> = [];
+      for (const dirPath of getSessionsPaths(agent)) {
+        try {
+          const files = await fs.readdir(dirPath);
+          const jsonlFiles = files.filter(f => f.endsWith('.jsonl'));
+          for (const f of jsonlFiles) {
+            const fPath = path.join(dirPath, f);
+            const fStat = await fs.stat(fPath);
+            allWithStats.push({ f, fPath, mtimeMs: fStat.mtimeMs });
+          }
+        } catch { /* dir not found */ }
+      }
+      allWithStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+      for (const { f, fPath } of allWithStats.slice(0, 5)) {
+        try {
+          const content = await fs.readFile(fPath, 'utf-8');
+          const lines = content.trim().split('\n');
+          for (const line of lines) {
+            const parsed = parseFeedEvent(line, f.replace('.jsonl', ''), 'openclaw');
+            if (!parsed) continue;
+            for (const evt of parsed) {
+              if (evt.timestamp && new Date(evt.timestamp) >= cutoff) {
+                events.push(evt);
+              }
+            }
+          }
+        } catch { /* skip unreadable file */ }
+      }
     }
 
     // Sort by timestamp and apply limit
