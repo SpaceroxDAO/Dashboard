@@ -1,6 +1,6 @@
 import { useSearchParams } from 'react-router-dom';
 import { PageContainer } from '@/components/layout';
-import { KanbanBoard } from '@/components/kanban';
+import { KanbanBoard, HermesKanban } from '@/components/kanban';
 
 export function TodosPage() {
   const [searchParams] = useSearchParams();
@@ -8,7 +8,10 @@ export function TodosPage() {
 
   return (
     <PageContainer title="Task Board">
-      <KanbanBoard initialProjectFilter={projectFilter} />
+      <div className="space-y-4">
+        <HermesKanban />
+        <KanbanBoard initialProjectFilter={projectFilter} />
+      </div>
     </PageContainer>
   );
 }

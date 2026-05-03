@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useAtom } from 'jotai';
 import {
   Radio, User, Bot, Pause, Play, Wrench, Check, X,
-  Brain, ArrowDownUp, Minimize2,
+  Brain, ArrowDownUp, Minimize2, ChevronDown, Loader2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Card, Badge, Button } from '@/components/ui';
@@ -40,6 +40,19 @@ interface FeedMessage {
 }
 
 const MAX_MESSAGES = 100;
+
+interface ToolPair {
+  _isPair: true;
+  id: string;
+  call: FeedMessage;
+  result?: FeedMessage;
+}
+
+type DisplayItem = FeedMessage | ToolPair;
+
+function isPair(item: DisplayItem): item is ToolPair {
+  return (item as ToolPair)._isPair === true;
+}
 
 // ─── Sub-components ───
 
@@ -128,6 +141,54 @@ function FeedRow({ msg, formatTime }: { msg: FeedMessage; formatTime: (ts: strin
   }
 }
 
+function ToolPairRow({
+  pair, formatTime, expanded, onToggle,
+}: {
+  pair: ToolPair;
+  formatTime: (ts: string) => string;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const { call, result } = pair;
+  const isRunning = !result;
+  const isError = result?.toolStatus === 'error';
+
+  return (
+    <div className="py-0.5 px-1 rounded hover:bg-surface-hover/50">
+      <div className="flex items-center gap-2 opacity-70">
+        <span className="text-text-dim flex-shrink-0 w-16">{formatTime(call.timestamp)}</span>
+        {isRunning
+          ? <Loader2 className="w-3 h-3 text-orange-400 flex-shrink-0 animate-spin" />
+          : isError
+          ? <X className="w-3 h-3 text-red-400 flex-shrink-0" />
+          : <Check className="w-3 h-3 text-green-400 flex-shrink-0" />
+        }
+        <span className={`font-medium flex-shrink-0 text-xs ${isError ? 'text-red-300' : isRunning ? 'text-orange-300' : 'text-green-300'}`}>
+          {call.toolName}
+        </span>
+        {call.toolArgs && (
+          <span className="text-text-dim flex-1 min-w-0 truncate text-[10px]">{call.toolArgs}</span>
+        )}
+        {result?.toolDuration !== undefined && (
+          <span className="text-text-dim flex-shrink-0 text-[10px]">{result.toolDuration}ms</span>
+        )}
+        {(call.toolArgs || result?.toolError) && (
+          <button onClick={onToggle} className="flex-shrink-0 opacity-40 hover:opacity-90 transition-opacity">
+            <ChevronDown className={`w-3 h-3 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+          </button>
+        )}
+      </div>
+      {expanded && (
+        <div className="ml-20 mt-1 p-1.5 bg-surface-base/60 rounded text-[10px] text-text-dim space-y-0.5">
+          {call.toolArgs && <p><span className="text-text-muted">args: </span>{call.toolArgs}</p>}
+          {result?.toolError && <p className="text-red-400"><span className="text-text-muted">error: </span>{result.toolError}</p>}
+          {isRunning && <p className="text-orange-400 animate-pulse">Running…</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main component ───
 
 export function LiveFeed() {
@@ -138,6 +199,14 @@ export function LiveFeed() {
   const [unavailable, setUnavailable] = useState(false);
   const [showTools, setShowTools] = useState(true);
   const [showCortex, setShowCortex] = useState(false);
+  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
+  const toggleTool = useCallback((id: string) => {
+    setExpandedTools(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }, []);
   const eventSourceRef = useRef<EventSource | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pausedRef = useRef(paused);
@@ -225,9 +294,40 @@ export function LiveFeed() {
     return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
   };
 
-  const displayMessages = showTools
-    ? messages
-    : messages.filter(m => m.type !== 'tool_call' && m.type !== 'tool_result');
+  const displayItems = useMemo((): DisplayItem[] => {
+    const filtered = showTools
+      ? messages
+      : messages.filter(m => m.type !== 'tool_call' && m.type !== 'tool_result');
+
+    const result: DisplayItem[] = [];
+    let i = 0;
+    while (i < filtered.length) {
+      const msg = filtered[i];
+      if (msg.type === 'tool_call') {
+        const next = filtered[i + 1];
+        if (next?.type === 'tool_result' && next.toolName === msg.toolName) {
+          result.push({ _isPair: true, id: msg.id, call: msg, result: next });
+          i += 2;
+          continue;
+        }
+        // Unpaired (still running or no result in window)
+        result.push({ _isPair: true, id: msg.id, call: msg, result: undefined });
+      } else if (msg.type === 'tool_result') {
+        // Orphaned result: try to update last pending pair with same tool
+        const last = result[result.length - 1];
+        if (last && isPair(last) && !last.result && last.call.toolName === msg.toolName) {
+          (last as ToolPair).result = msg;
+          i++;
+          continue;
+        }
+        // Otherwise skip orphaned result (it was already paired)
+      } else {
+        result.push(msg);
+      }
+      i++;
+    }
+    return result;
+  }, [messages, showTools]);
 
   return (
     <Card>
@@ -284,19 +384,28 @@ export function LiveFeed() {
               <p>Kira uses Kimi API</p>
               <p className="text-xs mt-1">No live session feed available</p>
             </div>
-          ) : displayMessages.length === 0 ? (
+          ) : displayItems.length === 0 ? (
             <div className="flex items-center justify-center h-full text-text-dim text-sm">
               Waiting for activity...
             </div>
           ) : (
             <AnimatePresence initial={false}>
-              {displayMessages.map(msg => (
+              {displayItems.map(item => (
                 <motion.div
-                  key={msg.id}
+                  key={isPair(item) ? item.id : item.id}
                   initial={{ opacity: 0, x: -10 }}
                   animate={{ opacity: 1, x: 0 }}
                 >
-                  <FeedRow msg={msg} formatTime={formatTime} />
+                  {isPair(item) ? (
+                    <ToolPairRow
+                      pair={item}
+                      formatTime={formatTime}
+                      expanded={expandedTools.has(item.id)}
+                      onToggle={() => toggleTool(item.id)}
+                    />
+                  ) : (
+                    <FeedRow msg={item} formatTime={formatTime} />
+                  )}
                 </motion.div>
               ))}
             </AnimatePresence>

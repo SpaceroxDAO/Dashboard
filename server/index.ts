@@ -2035,13 +2035,29 @@ app.get('/api/dashboard', async (req, res) => {
         generated: (billsContent as any).generated || null,
       } : null,
       financeExtended: {
-        netWorthHistory: (netWorthHistory as any)?.entries || [],
-        creditCard: bankBalances ? {
-          balance: (bankBalances as any)?.banks?.capitalone?.accounts?.find((a: any) => a.balance < 0)?.balance || 0,
-          minPayment: (bankBalances as any)?.banks?.capitalone?.min_payment_due || 0,
-          dueDate: (bankBalances as any)?.banks?.capitalone?.payment_due_date || '',
-          creditScore: (bankBalances as any)?.banks?.capitalone?.fico_score || 0,
-        } : null,
+        netWorthHistory: (() => {
+          const history = (netWorthHistory as any)?.history || (netWorthHistory as any)?.entries || [];
+          const current = (netWorthHistory as any)?.current;
+          if (current?.total && (netWorthHistory as any)?.lastUpdated) {
+            const date = ((netWorthHistory as any).lastUpdated as string).slice(0, 10);
+            if (!history.find((h: any) => h.date === date)) {
+              return [...history, { date, netWorth: current.total }];
+            }
+          }
+          return history;
+        })(),
+        creditCard: bankBalances ? (() => {
+          const accounts = (bankBalances as any)?.accounts || [];
+          const creditBalance = accounts
+            .filter((a: any) => a.type === 'credit')
+            .reduce((sum: number, a: any) => sum + (a.balance || 0), 0);
+          return creditBalance < 0 ? {
+            balance: creditBalance,
+            minPayment: 0,
+            dueDate: '',
+            creditScore: 0,
+          } : null;
+        })() : null,
         subscriptionsByCategory: (billsContent as any)?.subscriptions?.byCategory || {},
         aiCosts: (aiCostHistory as any)?.entries?.[0] ? {
           weekTotal: (aiCostHistory as any).entries[0].weeklyTotal || 0,
@@ -3196,6 +3212,129 @@ app.post('/api/reports', async (req, res) => {
     res.json(report);
   } catch (error) {
     res.status(500).json({ error: 'Failed to create report' });
+  }
+});
+
+// ─── Build log + friction queue ───
+
+app.get('/api/agents/:agentId/build-log', async (req, res) => {
+  const { agentId } = req.params;
+  const memPath = agentMemoryPath(agentId);
+  try {
+    const [buildLogRaw, frictionRaw] = await Promise.allSettled([
+      fs.readFile(path.join(memPath, 'build-log.md'), 'utf-8'),
+      fs.readFile(path.join(memPath, 'friction-points.md'), 'utf-8'),
+    ]);
+
+    let lastBuild: { date: string; friction: string; solution: string; status: string } | null = null;
+    if (buildLogRaw.status === 'fulfilled') {
+      const match = buildLogRaw.value.match(/## (\d{4}-\d{2}-\d{2}[^\n]*)\n([\s\S]*?)(?=\n## |\n---|\s*$)/);
+      if (match) {
+        const sectionText = match[2];
+        const getField = (field: string) => {
+          const m = sectionText.match(new RegExp(`\\|\\s*\\*\\*${field}\\*\\*\\s*\\|\\s*([^|\\n]+)`));
+          return m ? m[1].trim() : '';
+        };
+        lastBuild = {
+          date: getField('Date') || match[1].trim(),
+          friction: getField('Friction'),
+          solution: getField('Solution'),
+          status: getField('Status'),
+        };
+      }
+    }
+
+    const frictionCount = frictionRaw.status === 'fulfilled'
+      ? (frictionRaw.value.match(/^### /gm) || []).length
+      : 0;
+
+    res.json({ lastBuild, frictionCount });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to read build log' });
+  }
+});
+
+// ─── Reflections (evening reflections, daily logs) ───
+
+app.get('/api/agents/:agentId/reflections', async (req, res) => {
+  const { agentId } = req.params;
+  const reflectionsPath = path.join(agentMemoryPath(agentId), 'reflections');
+  try {
+    const files = await fs.readdir(reflectionsPath).catch(() => []);
+    const mdFiles = (files as string[])
+      .filter(f => f.endsWith('.md'))
+      .sort()
+      .reverse()
+      .slice(0, 30);
+
+    const entries = await Promise.all(
+      mdFiles.map(async (file) => {
+        const content = await fs.readFile(path.join(reflectionsPath, file), 'utf-8').catch(() => '');
+        const firstLines = content.split('\n').filter(Boolean).slice(0, 5).join('\n');
+        const isWeekly = file.startsWith('weekly-');
+        const isLearnings = file.startsWith('learnings-');
+        const dateStr = file.replace('weekly-', '').replace('learnings-', '').replace('.md', '');
+        return {
+          id: file.replace('.md', ''),
+          filename: file,
+          date: dateStr,
+          type: isWeekly ? 'weekly' : isLearnings ? 'learnings' : 'evening',
+          title: isWeekly ? `Weekly Review — ${dateStr}` : isLearnings ? `Learnings — ${dateStr}` : `Evening Reflection — ${dateStr}`,
+          excerpt: firstLines.slice(0, 250),
+        };
+      })
+    );
+
+    res.json(entries);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to read reflections' });
+  }
+});
+
+app.get('/api/agents/:agentId/reflections/:id', async (req, res) => {
+  const { agentId, id } = req.params;
+  const reflectionsPath = path.join(agentMemoryPath(agentId), 'reflections');
+  try {
+    const content = await fs.readFile(path.join(reflectionsPath, `${id}.md`), 'utf-8');
+    res.json({ id, content });
+  } catch (error) {
+    res.status(404).json({ error: 'Reflection not found' });
+  }
+});
+
+// ─── Hermes Kanban (native agent task board via kanban.db) ───
+
+const KANBAN_QUERY_SCRIPT = path.join(os.homedir(), 'finn', 'agent-dashboard', 'server', 'kanban_query.py');
+
+app.get('/api/agents/:agentId/kanban', async (req, res) => {
+  const { agentId } = req.params;
+  if (agentId !== 'finn') {
+    return res.json({ tasks: [], stats: { total: 0, running: 0, blocked: 0, done: 0 } });
+  }
+  try {
+    const { stdout } = await execAsync(`python3 ${KANBAN_QUERY_SCRIPT}`);
+    const parsed = JSON.parse(stdout.trim());
+    if (parsed.error) {
+      return res.status(500).json({ error: parsed.error });
+    }
+    const tasks = parsed as Array<{
+      id: string; title: string; assignee: string; status: string;
+      priority: number; created_at: number; completed_at: number | null;
+      run_count: number; spawn_failures: number; last_spawn_error: string | null;
+    }>;
+    const stats = {
+      total: tasks.length,
+      triage: tasks.filter(t => t.status === 'triage').length,
+      todo: tasks.filter(t => t.status === 'todo').length,
+      ready: tasks.filter(t => t.status === 'ready').length,
+      running: tasks.filter(t => t.status === 'running').length,
+      blocked: tasks.filter(t => t.status === 'blocked').length,
+      done: tasks.filter(t => t.status === 'done').length,
+    };
+    res.json({ tasks, stats });
+  } catch (error) {
+    console.error('Kanban query error:', error);
+    res.status(500).json({ error: 'Failed to read kanban.db' });
   }
 });
 

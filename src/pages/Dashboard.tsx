@@ -8,6 +8,9 @@ import {
   FinnSupervisionPanel,
   SystemMonitoringPanel,
   KiraReflectionsPanel,
+  FinanceWidgetV2,
+  HealthWidgetV2,
+  NightlyBuildCard,
 } from '@/components/dashboard';
 import {
   CostBreakdown,
@@ -71,6 +74,14 @@ export function DashboardPage() {
 
         <LiveFeed />
         <StatsGrid />
+
+        {!isKira && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+            <HealthWidgetV2 />
+            <FinanceWidgetV2 />
+            <NightlyBuildCard />
+          </div>
+        )}
 
         {isKira && (
           <>

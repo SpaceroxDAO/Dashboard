@@ -15,3 +15,4 @@ export { KiraReflectionsPanel } from './KiraReflectionsPanel';
 export { FinanceWidget } from './FinanceWidget';
 export { FinanceWidgetV2 } from './FinanceWidgetV2';
 export { HealthWidgetV2 } from './HealthWidgetV2';
+export { NightlyBuildCard } from './NightlyBuildCard';
