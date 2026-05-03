@@ -8,6 +8,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Card, Badge, Button } from '@/components/ui';
 import { getSSEUrl } from '@/services/api';
 import { activeAgentIdAtom } from '@/store/atoms';
+import { Neurovisualizer } from './Neurovisualizer';
 
 // ─── Types ───
 
@@ -136,6 +137,7 @@ export function LiveFeed() {
   const [paused, setPaused] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
   const [showTools, setShowTools] = useState(true);
+  const [showCortex, setShowCortex] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pausedRef = useRef(paused);
@@ -248,6 +250,13 @@ export function LiveFeed() {
               <Button
                 variant="ghost"
                 size="sm"
+                icon={<Brain className={`w-3.5 h-3.5 ${showCortex ? 'text-cyan-400' : 'text-text-dim'}`} />}
+                onClick={() => setShowCortex(!showCortex)}
+                title="Cellular cortex visualizer"
+              />
+              <Button
+                variant="ghost"
+                size="sm"
                 icon={<Wrench className={`w-3.5 h-3.5 ${showTools ? 'text-orange-400' : 'text-text-dim'}`} />}
                 onClick={() => setShowTools(!showTools)}
               />
@@ -262,34 +271,38 @@ export function LiveFeed() {
         </div>
       </div>
 
-      <div
-        ref={scrollRef}
-        className="h-48 overflow-y-auto space-y-0.5 font-mono text-xs scrollbar-thin"
-      >
-        {unavailable ? (
-          <div className="flex flex-col items-center justify-center h-full text-text-dim text-sm">
-            <Radio className="w-6 h-6 mb-2 opacity-30" />
-            <p>Kira uses Kimi API</p>
-            <p className="text-xs mt-1">No live session feed available</p>
-          </div>
-        ) : displayMessages.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-text-dim text-sm">
-            Waiting for activity...
-          </div>
-        ) : (
-          <AnimatePresence initial={false}>
-            {displayMessages.map(msg => (
-              <motion.div
-                key={msg.id}
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-              >
-                <FeedRow msg={msg} formatTime={formatTime} />
-              </motion.div>
-            ))}
-          </AnimatePresence>
-        )}
-      </div>
+      {showCortex && !unavailable ? (
+        <Neurovisualizer height={192} />
+      ) : (
+        <div
+          ref={scrollRef}
+          className="h-48 overflow-y-auto space-y-0.5 font-mono text-xs scrollbar-thin"
+        >
+          {unavailable ? (
+            <div className="flex flex-col items-center justify-center h-full text-text-dim text-sm">
+              <Radio className="w-6 h-6 mb-2 opacity-30" />
+              <p>Kira uses Kimi API</p>
+              <p className="text-xs mt-1">No live session feed available</p>
+            </div>
+          ) : displayMessages.length === 0 ? (
+            <div className="flex items-center justify-center h-full text-text-dim text-sm">
+              Waiting for activity...
+            </div>
+          ) : (
+            <AnimatePresence initial={false}>
+              {displayMessages.map(msg => (
+                <motion.div
+                  key={msg.id}
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                >
+                  <FeedRow msg={msg} formatTime={formatTime} />
+                </motion.div>
+              ))}
+            </AnimatePresence>
+          )}
+        </div>
+      )}
     </Card>
   );
 }
