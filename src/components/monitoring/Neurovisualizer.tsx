@@ -35,10 +35,14 @@ function reactionFor(evt: { type: string; channel?: string; toolStatus?: string 
     return { module: 'core', kind: 'pulse', start: now, duration: 2500 };
   }
   if (evt.type === 'assistant') return { module: 'model', kind: 'pulse', start: now, duration: 1800 };
-  if (evt.type === 'tool_call') return { module: 'tools', kind: 'ripple', start: now, duration: 1800 };
+  // Tool calls linger longer — Hermes often fires several in quick succession
+  // within one agent:step, and a too-short ripple makes the burst feel like a
+  // strobe. ~4s lets adjacent reactions blend into a sustained "tools active"
+  // state instead of a flicker.
+  if (evt.type === 'tool_call') return { module: 'tools', kind: 'ripple', start: now, duration: 4000 };
   if (evt.type === 'tool_result') {
-    if (evt.toolStatus === 'error') return { module: 'tools', kind: 'shatter', start: now, duration: 2000 };
-    return { module: 'tools', kind: 'ripple', start: now, duration: 800 };
+    if (evt.toolStatus === 'error') return { module: 'tools', kind: 'shatter', start: now, duration: 3000 };
+    return { module: 'tools', kind: 'ripple', start: now, duration: 2000 };
   }
   if (evt.type === 'compaction') return { module: 'memory', kind: 'pulse', start: now, duration: 2500 };
   if (evt.type === 'model_change') return { module: 'model', kind: 'pulse', start: now, duration: 2500 };
@@ -182,14 +186,12 @@ export function Neurovisualizer({ height = 192 }: NeurovisualizerProps) {
         }
       }
 
-      // Global aliveness — drives the ambient ripple/border animation. Drops
-      // toward 0 when Finn is idle so the cortex visibly rests instead of
-      // pretending to react. Boosted by recent reactions and recent SSE events.
-      const lea = lastEventAtRef.current;
-      const recentEventBoost = lea ? Math.max(0, 1 - (now - lea) / 8000) : 0;
-      const reactionBoost = Math.min(1, reactionsRef.current.length / 3);
-      const alive = Math.max(recentEventBoost, reactionBoost); // 0 = idle, 1 = active
-      const ambientLevel = 0.05 + alive * 0.95; // never fully zero — keep a faint heartbeat
+      // Per-module activity is the only thing that brightens cells. We
+      // deliberately do NOT use global aliveness for cell brightness — that
+      // caused every module's region to light up together (cron looked active
+      // when only tools was firing). Background stays at a constant faint
+      // baseline; only a module's *own* recent reactions raise its cells.
+      const STATIC_BASELINE = 0.08; // very faint constant glow so cortex isn't pitch-black
 
       // Voronoi-cell tessellation
       for (let y = 0; y < h; y += STEP) {
@@ -210,27 +212,35 @@ export function Neurovisualizer({ height = 192 }: NeurovisualizerProps) {
           const edgeDist = Math.sqrt(d2) - Math.sqrt(d1);
 
           const owning = MODULES[i1].name;
+          const neighbour = MODULES[i2].name;
           const act = moduleActivity[owning];
           const activity = act?.intensity || 0;
           const isError = act?.isError || false;
+          // Border between two modules — glows if EITHER side is reacting,
+          // since a border belongs to both.
+          const neighAct = moduleActivity[neighbour];
+          const borderActivity = Math.max(activity, neighAct?.intensity || 0);
+          const borderError = isError || (neighAct?.isError ?? false);
 
           if (edgeDist < 0.025) {
-            // Border cell — only flickers when alive; static dim when idle
-            const pulse = ambientLevel * Math.abs(Math.sin(f * 0.08 + i1 * 0.7));
+            // Border cell — flickers in proportion to the modules it separates
+            const cellLife = STATIC_BASELINE + borderActivity * 0.92;
+            const pulse = cellLife * Math.abs(Math.sin(f * 0.08 + i1 * 0.7));
             const phase = (f * 0.005 + (i1 + i2) * 0.17) % 1;
-            const baseAlpha = 0.25 + 0.30 * ambientLevel;
-            ctx.fillStyle = hueColor(0.4 * ambientLevel + 0.5 * pulse, phase, baseAlpha + 0.45 * activity, isError);
+            const alpha = 0.20 + 0.55 * cellLife;
+            ctx.fillStyle = hueColor(0.3 * cellLife + 0.55 * pulse, phase, alpha, borderError);
             ctx.fillRect(x, y, STEP, STEP);
           } else {
+            // Interior cell — only ripples when its own module is reacting
+            const cellLife = STATIC_BASELINE + activity * 0.92;
             const dCenter = Math.sqrt(d1);
-            // Slow the ripple wave when idle — ambient should breathe, not rush
-            const rippleSpeed = 0.05 * (0.2 + 0.8 * ambientLevel);
-            const ripple = (Math.sin(dCenter * 18 - f * rippleSpeed) + 1) / 2 * ambientLevel;
-            const visible = ripple > 0.25 || activity > 0.1;
+            const rippleSpeed = 0.05 * (0.2 + 0.8 * cellLife);
+            const ripple = ((Math.sin(dCenter * 18 - f * rippleSpeed) + 1) / 2) * cellLife;
+            const visible = ripple > 0.18 || activity > 0.05;
             if (visible) {
-              const v = Math.max(ripple * 0.7, activity);
+              const v = Math.max(ripple * 0.75, activity);
               const phase = (f * 0.004 + i1 * 0.16 + dCenter * 0.1) % 1;
-              ctx.fillStyle = hueColor(v, phase, 0.20 * ambientLevel + 0.55 * Math.max(ripple - 0.25, activity), isError);
+              ctx.fillStyle = hueColor(v, phase, 0.15 * cellLife + 0.55 * Math.max(ripple - 0.18, activity), isError);
               ctx.fillRect(x, y, STEP, STEP);
             }
           }
@@ -249,11 +259,13 @@ export function Neurovisualizer({ height = 192 }: NeurovisualizerProps) {
         const activity = act?.intensity || 0;
         const isError = act?.isError || false;
 
-        // Activity ring expands outward as the reaction fades
+        // Activity ring expands outward as the reaction fades. Capped well
+        // inside the module's Voronoi cell so it doesn't visually invade
+        // adjacent modules and create the impression they're firing too.
         // Normal: signal-primary orange #e07832 / Error: signal-alert red #ef4444
         if (activity > 0) {
           ctx.beginPath();
-          const ringRadius = 14 + (1 - activity) * 60;
+          const ringRadius = 10 + (1 - activity) * 28;
           ctx.arc(px, py, ringRadius, 0, Math.PI * 2);
           ctx.strokeStyle = isError
             ? `rgba(239, 68, 68, ${activity})`
