@@ -77,14 +77,10 @@ export function DashboardPage() {
         <StatsGrid />
 
         {!isKira && (
-          <>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <NightlyBuildCard />
-              <CuratorStatusCard />
-            </div>
-            <InsightsPanel />
-            <DoctorPanel />
-          </>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <NightlyBuildCard />
+            <CuratorStatusCard />
+          </div>
         )}
 
         {isKira && (
@@ -107,6 +103,13 @@ export function DashboardPage() {
             <ServiceControls onToast={handleToast} />
           </div>
         </div>
+
+        {!isKira && (
+          <>
+            <InsightsPanel />
+            <DoctorPanel />
+          </>
+        )}
       </div>
     </PageContainer>
   );
