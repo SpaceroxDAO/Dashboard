@@ -228,7 +228,7 @@ export function PersonasPanel() {
       >
         <h2 className="text-sm font-semibold text-text-bright flex items-center gap-1.5 flex-1 min-w-0">
           <Bot className="w-4 h-4 text-signal-primary shrink-0" />
-          Finn Mode
+          Persona Mode
           <span className={`ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium ${
             activePersona
               ? `${activePersona.bgColor} ${activePersona.color}`
