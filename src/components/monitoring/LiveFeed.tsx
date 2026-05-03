@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useAtom } from 'jotai';
 import {
   Radio, User, Bot, Pause, Play, Wrench, Check, X,
-  Brain, ArrowDownUp, Minimize2, ChevronDown, Loader2,
+  Brain, ArrowDownUp, Minimize2, ChevronDown, Loader2, Download,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Card, Badge, Button } from '@/components/ui';
@@ -207,6 +207,64 @@ export function LiveFeed() {
       return next;
     });
   }, []);
+
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const exportButtonRef = useRef<HTMLDivElement>(null);
+
+  // Close export menu on outside click
+  useEffect(() => {
+    if (!showExportMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (exportButtonRef.current && !exportButtonRef.current.contains(e.target as Node)) {
+        setShowExportMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showExportMenu]);
+
+  const triggerDownload = useCallback((content: string, filename: string, mimeType: string) => {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const exportAsMarkdown = useCallback(() => {
+    setShowExportMenu(false);
+    if (messages.length === 0) return;
+    const firstTs = new Date(messages[0].timestamp).toLocaleString();
+    const lines: string[] = [`## Session Export — ${firstTs}`, ''];
+    for (const msg of messages) {
+      const time = new Date(msg.timestamp).toLocaleTimeString('en-US', {
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+      });
+      let line = `**${time}** [${msg.type}]`;
+      if (msg.type === 'tool_call') {
+        line += ` ${msg.toolName ?? ''}`;
+        if (msg.toolArgs) line += ` — ${msg.toolArgs}`;
+      } else if (msg.type === 'tool_result') {
+        line += ` ${msg.toolName ?? ''} (${msg.toolStatus ?? 'completed'})`;
+        if (msg.toolError) line += ` — error: ${msg.toolError}`;
+      } else {
+        line += ` ${msg.text ?? ''}`;
+        if (msg.type === 'assistant' && msg.cost != null) {
+          line += ` [$${msg.cost < 0.01 ? msg.cost.toFixed(3) : msg.cost.toFixed(2)}]`;
+        }
+      }
+      lines.push(line);
+    }
+    triggerDownload(lines.join('\n'), `session-export-${Date.now()}.md`, 'text/markdown');
+  }, [messages, triggerDownload]);
+
+  const exportAsJSON = useCallback(() => {
+    setShowExportMenu(false);
+    triggerDownload(JSON.stringify(messages, null, 2), `session-export-${Date.now()}.json`, 'application/json');
+  }, [messages, triggerDownload]);
+
   const eventSourceRef = useRef<EventSource | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pausedRef = useRef(paused);
@@ -360,6 +418,33 @@ export function LiveFeed() {
                 icon={<Wrench className={`w-3.5 h-3.5 ${showTools ? 'text-orange-400' : 'text-text-dim'}`} />}
                 onClick={() => setShowTools(!showTools)}
               />
+              {messages.length > 0 && (
+                <div ref={exportButtonRef} className="relative">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon={<Download className="w-3.5 h-3.5 text-text-dim" />}
+                    onClick={() => setShowExportMenu(prev => !prev)}
+                    title="Export feed"
+                  />
+                  {showExportMenu && (
+                    <div className="absolute bottom-full right-0 mb-1 w-32 bg-surface-elevated border border-[var(--color-border-panel)] rounded-lg shadow-xl overflow-hidden z-20">
+                      <button
+                        onClick={exportAsMarkdown}
+                        className="w-full px-3 py-2 text-left text-xs text-text-muted hover:bg-surface-hover hover:text-text-bright transition-colors"
+                      >
+                        Markdown
+                      </button>
+                      <button
+                        onClick={exportAsJSON}
+                        className="w-full px-3 py-2 text-left text-xs text-text-muted hover:bg-surface-hover hover:text-text-bright transition-colors"
+                      >
+                        JSON
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
               <Button
                 variant="ghost"
                 size="sm"

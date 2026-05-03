@@ -19,3 +19,4 @@ export { NightlyBuildCard } from './NightlyBuildCard';
 export { CuratorStatusCard } from './CuratorStatusCard';
 export { InsightsPanel } from './InsightsPanel';
 export { DoctorPanel } from './DoctorPanel';
+export { PersonasPanel } from './PersonasPanel';

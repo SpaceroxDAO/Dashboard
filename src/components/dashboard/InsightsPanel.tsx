@@ -29,6 +29,7 @@ interface InsightsData {
   platforms: Array<{ name: string; sessions: number; messages: number; tokens: number }>;
   topTools: ToolEntry[];
   activityByDay: Record<string, number>;
+  activityByHour?: Record<string, number>;
   peakHours: string[];
   activeDays: number;
   bestStreak: number;
@@ -172,6 +173,32 @@ export function InsightsPanel() {
                   })}
                 </div>
               </div>
+
+              {/* Hour-of-day heatmap */}
+              {data?.activityByHour && Object.keys(data.activityByHour).length > 0 && (
+                <div>
+                  <div className="text-[10px] font-medium text-text-muted uppercase tracking-wider mb-1.5">Hour of day (UTC)</div>
+                  <div className="flex gap-0.5 items-end">
+                    {Array.from({length: 24}, (_, h) => {
+                      const val = data.activityByHour![String(h)] ?? 0;
+                      const maxH = Math.max(...Object.values(data.activityByHour!), 1);
+                      const pct = val / maxH;
+                      return (
+                        <div key={h} className="flex flex-col items-center gap-0.5 flex-1">
+                          <div
+                            className={`w-full rounded-sm ${val > 0 ? 'bg-signal-primary' : 'bg-surface-active'}`}
+                            style={{ height: '16px', opacity: val > 0 ? Math.max(0.2, pct) : 0.2 }}
+                            title={`${h}:00 — ${val} messages`}
+                          />
+                          <span className="text-[8px] text-text-dim">
+                            {h % 3 === 0 ? h : ''}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* Top tools */}
               {topTools.length > 0 && (

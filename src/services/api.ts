@@ -466,6 +466,10 @@ export interface CostSummary {
     project: string;
     model: string;
     date: string;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
     totalCost: number;
     cacheSavings: number;
     messageCount: number;

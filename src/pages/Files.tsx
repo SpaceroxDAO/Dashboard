@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { FolderOpen, FileText, ChevronRight, ChevronLeft, Loader2, Save, RotateCcw } from 'lucide-react';
+import Editor from '@monaco-editor/react';
 import { PageContainer } from '@/components/layout';
 import { API_BASE } from '@/services/api';
 import { useAtom } from 'jotai';
@@ -21,6 +22,17 @@ interface FileContentResponse {
   path: string;
   content: string;
   size: number;
+}
+
+function detectLanguage(filename: string): string {
+  const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+  const map: Record<string, string> = {
+    ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
+    py: 'python', json: 'json', md: 'markdown', yaml: 'yaml', yml: 'yaml',
+    sh: 'shell', bash: 'shell', css: 'css', html: 'html', xml: 'xml',
+    toml: 'ini', env: 'ini', txt: 'plaintext',
+  };
+  return map[ext] ?? 'plaintext';
 }
 
 function formatSize(bytes: number): string {
@@ -279,18 +291,31 @@ export function FilesPage() {
               </div>
             </div>
 
-            {/* Textarea */}
+            {/* Editor */}
             {loadingFile ? (
               <div className="flex items-center justify-center py-12">
                 <Loader2 className="w-5 h-5 animate-spin text-signal-primary" />
               </div>
             ) : (
-              <textarea
-                value={fileContent}
-                onChange={e => setFileContent(e.target.value)}
-                className="flex-1 w-full min-h-[60vh] bg-surface-base border border-[var(--color-border-panel)] rounded-xl p-3 text-xs font-mono text-text-bright leading-relaxed resize-none focus:outline-none focus:border-signal-primary"
-                spellCheck={false}
-              />
+              <div className="flex-1 w-full min-h-[60vh] rounded-xl overflow-hidden border border-[var(--color-border-panel)]">
+                <Editor
+                  height="60vh"
+                  language={detectLanguage(fileNameOnly ?? '')}
+                  value={fileContent}
+                  onChange={(value) => setFileContent(value ?? '')}
+                  theme="vs-dark"
+                  options={{
+                    fontSize: 12,
+                    minimap: { enabled: false },
+                    scrollBeyondLastLine: false,
+                    wordWrap: 'on',
+                    lineNumbers: 'on',
+                    renderLineHighlight: 'line',
+                    padding: { top: 8, bottom: 8 },
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                  }}
+                />
+              </div>
             )}
           </div>
         )}

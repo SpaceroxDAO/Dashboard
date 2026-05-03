@@ -1,6 +1,7 @@
+import { useState } from 'react';
 import { useAtom } from 'jotai';
 import { useQuery } from '@tanstack/react-query';
-import { DollarSign, TrendingUp, TrendingDown, Zap, Loader2 } from 'lucide-react';
+import { DollarSign, TrendingUp, TrendingDown, Zap, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { Card, Badge } from '@/components/ui';
 import { getCosts } from '@/services/api';
@@ -41,6 +42,7 @@ function formatTokens(n: number): string {
 
 export function CostBreakdown() {
   const [agentId] = useAtom(activeAgentIdAtom);
+  const [showLedger, setShowLedger] = useState(false);
   const { data, isLoading } = useQuery({
     queryKey: ['costs', agentId, 30],
     queryFn: () => getCosts(30, agentId),
@@ -141,6 +143,78 @@ export function CostBreakdown() {
           </div>
         )}
 
+        {/* Cache efficiency */}
+        {(data.totalCacheReadTokens > 0 || data.totalCacheSavings > 0) && (
+          <div className="mt-3 p-2 bg-surface-base/50 rounded-lg">
+            <div className="text-xs text-text-dim mb-1.5">Cache efficiency</div>
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <div className="text-sm font-medium text-signal-online">{formatCost(data.totalCacheSavings)}</div>
+                <div className="text-[10px] text-text-dim">saved</div>
+              </div>
+              <div>
+                <div className="text-sm font-medium text-text-bright">{formatTokens(data.totalCacheReadTokens)}</div>
+                <div className="text-[10px] text-text-dim">cache hits</div>
+              </div>
+              <div>
+                {(() => {
+                  const total = data.totalInputTokens + data.totalCacheReadTokens;
+                  const hitRate = total > 0 ? Math.round((data.totalCacheReadTokens / total) * 100) : 0;
+                  return (
+                    <>
+                      <div className="text-sm font-medium text-text-bright">{hitRate}%</div>
+                      <div className="text-[10px] text-text-dim">hit rate</div>
+                    </>
+                  );
+                })()}
+              </div>
+            </div>
+            {(() => {
+              const total = data.totalInputTokens + data.totalCacheReadTokens;
+              const hitRate = total > 0 ? Math.round((data.totalCacheReadTokens / total) * 100) : 0;
+              return hitRate > 0 ? (
+                <div className="mt-1.5 h-1 bg-surface-hover rounded-full overflow-hidden">
+                  <div className="h-full bg-signal-online rounded-full" style={{ width: `${hitRate}%` }} />
+                </div>
+              ) : null;
+            })()}
+          </div>
+        )}
+
+        {/* Cost ledger */}
+        {data.recentSessions.length > 0 && (
+          <div className="mt-3">
+            <button
+              onClick={() => setShowLedger(v => !v)}
+              className="flex items-center gap-1 text-xs text-text-dim hover:text-text-bright transition-colors w-full"
+            >
+              {showLedger ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+              Session ledger ({data.recentSessions.length} sessions)
+            </button>
+            {showLedger && (
+              <div className="mt-2 space-y-0.5 max-h-48 overflow-y-auto">
+                <div className="grid grid-cols-[auto_1fr_auto_auto] gap-x-2 text-[9px] text-text-dim uppercase tracking-wide pb-1 sticky top-0 bg-surface-elevated">
+                  <span>Date</span>
+                  <span>Model</span>
+                  <span className="text-right">Tokens</span>
+                  <span className="text-right">Cost</span>
+                </div>
+                {data.recentSessions
+                  .slice()
+                  .sort((a, b) => b.date.localeCompare(a.date))
+                  .map((s) => (
+                    <div key={s.sessionId} className="grid grid-cols-[auto_1fr_auto_auto] gap-x-2 items-center py-0.5">
+                      <span className="text-[10px] text-text-dim tabular-nums">{s.date.slice(5)}</span>
+                      <span className="text-[10px] text-text-muted font-mono truncate">{s.model.replace('claude-', '').replace('gpt-', '')}</span>
+                      <span className="text-[10px] text-text-muted tabular-nums text-right">{formatTokens(s.inputTokens + s.outputTokens)}</span>
+                      <span className="text-[10px] text-text-bright tabular-nums text-right">{formatCost(s.totalCost)}</span>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {data.recentSessions.length === 0 && (
           <div className="flex flex-col items-center justify-center py-6 text-text-dim text-sm">
             <Zap className="w-8 h-8 mb-2 opacity-30" />
@@ -217,6 +291,44 @@ export function CostBreakdown() {
                 );
               })}
             </div>
+          </div>
+        )}
+
+        {/* Cache efficiency */}
+        {(data.totalCacheReadTokens > 0 || data.totalCacheSavings > 0) && (
+          <div className="mt-3 p-2 bg-surface-base/50 rounded-lg">
+            <div className="text-xs text-text-dim mb-1.5">Cache efficiency</div>
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <div className="text-sm font-medium text-signal-online">{formatCost(data.totalCacheSavings)}</div>
+                <div className="text-[10px] text-text-dim">saved</div>
+              </div>
+              <div>
+                <div className="text-sm font-medium text-text-bright">{formatTokens(data.totalCacheReadTokens)}</div>
+                <div className="text-[10px] text-text-dim">cache hits</div>
+              </div>
+              <div>
+                {(() => {
+                  const total = data.totalInputTokens + data.totalCacheReadTokens;
+                  const hitRate = total > 0 ? Math.round((data.totalCacheReadTokens / total) * 100) : 0;
+                  return (
+                    <>
+                      <div className="text-sm font-medium text-text-bright">{hitRate}%</div>
+                      <div className="text-[10px] text-text-dim">hit rate</div>
+                    </>
+                  );
+                })()}
+              </div>
+            </div>
+            {(() => {
+              const total = data.totalInputTokens + data.totalCacheReadTokens;
+              const hitRate = total > 0 ? Math.round((data.totalCacheReadTokens / total) * 100) : 0;
+              return hitRate > 0 ? (
+                <div className="mt-1.5 h-1 bg-surface-hover rounded-full overflow-hidden">
+                  <div className="h-full bg-signal-online rounded-full" style={{ width: `${hitRate}%` }} />
+                </div>
+              ) : null;
+            })()}
           </div>
         )}
       </Card>
@@ -315,6 +427,44 @@ export function CostBreakdown() {
               );
             })}
           </div>
+        </div>
+      )}
+
+      {/* Cache efficiency */}
+      {(data.totalCacheReadTokens > 0 || data.totalCacheSavings > 0) && (
+        <div className="mt-3 p-2 bg-surface-base/50 rounded-lg">
+          <div className="text-xs text-text-dim mb-1.5">Cache efficiency</div>
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="text-sm font-medium text-signal-online">{formatCost(data.totalCacheSavings)}</div>
+              <div className="text-[10px] text-text-dim">saved</div>
+            </div>
+            <div>
+              <div className="text-sm font-medium text-text-bright">{formatTokens(data.totalCacheReadTokens)}</div>
+              <div className="text-[10px] text-text-dim">cache hits</div>
+            </div>
+            <div>
+              {(() => {
+                const total = data.totalInputTokens + data.totalCacheReadTokens;
+                const hitRate = total > 0 ? Math.round((data.totalCacheReadTokens / total) * 100) : 0;
+                return (
+                  <>
+                    <div className="text-sm font-medium text-text-bright">{hitRate}%</div>
+                    <div className="text-[10px] text-text-dim">hit rate</div>
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+          {(() => {
+            const total = data.totalInputTokens + data.totalCacheReadTokens;
+            const hitRate = total > 0 ? Math.round((data.totalCacheReadTokens / total) * 100) : 0;
+            return hitRate > 0 ? (
+              <div className="mt-1.5 h-1 bg-surface-hover rounded-full overflow-hidden">
+                <div className="h-full bg-signal-online rounded-full" style={{ width: `${hitRate}%` }} />
+              </div>
+            ) : null;
+          })()}
         </div>
       )}
     </Card>

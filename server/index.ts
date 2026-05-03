@@ -3319,6 +3319,40 @@ app.get('/api/agents/:agentId/curator', async (req, res) => {
   }
 });
 
+async function computeActivityByHour(sessionsPath: string, days: number): Promise<Record<string, number>> {
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  let files: string[];
+  try {
+    files = await fs.readdir(sessionsPath);
+  } catch {
+    return {};
+  }
+  const counts: Record<string, number> = {};
+  for (const file of files) {
+    if (!file.endsWith('.jsonl')) continue;
+    let raw: string;
+    try {
+      raw = await fs.readFile(path.join(sessionsPath, file), 'utf8');
+    } catch {
+      continue;
+    }
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (!obj.timestamp) continue;
+        const ts = new Date(obj.timestamp).getTime();
+        if (isNaN(ts) || ts < cutoff) continue;
+        const hour = String(new Date(ts).getUTCHours());
+        counts[hour] = (counts[hour] ?? 0) + 1;
+      } catch {
+        // skip malformed lines
+      }
+    }
+  }
+  return counts;
+}
+
 // GET /api/agents/:agentId/insights?days=30
 app.get('/api/agents/:agentId/insights', async (req, res) => {
   const { agentId } = req.params;
@@ -3410,7 +3444,10 @@ app.get('/api/agents/:agentId/insights', async (req, res) => {
       mostToolCalls: mostToolsM ? { count: num(mostToolsM[1]),    date: mostToolsM[2].trim(), id: mostToolsM[3].trim() } : null,
     };
 
-    const data = { period, overview: ov, models, platforms, topTools, activityByDay, peakHours, activeDays, bestStreak, notableSessions };
+    const hermesSessPath = path.join(os.homedir(), '.hermes', 'sessions');
+    const activityByHour = await computeActivityByHour(hermesSessPath, days).catch(() => ({}));
+
+    const data = { period, overview: ov, models, platforms, topTools, activityByDay, activityByHour, peakHours, activeDays, bestStreak, notableSessions };
     hermesInsightsCache.set(cacheKey, { data, ts: Date.now() });
     res.json(data);
   } catch (error: any) {

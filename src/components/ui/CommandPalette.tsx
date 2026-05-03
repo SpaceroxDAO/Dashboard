@@ -11,10 +11,13 @@ import {
   Settings,
   Target,
   CheckSquare,
-  ListTodo,
   Dna,
   RefreshCw,
   Keyboard,
+  User,
+  BarChart2,
+  Compass,
+  ScrollText,
 } from 'lucide-react';
 
 interface Command {
@@ -23,6 +26,7 @@ interface Command {
   icon: typeof Search;
   action: () => void;
   keywords?: string[];
+  category?: string;
 }
 
 interface CommandPaletteProps {
@@ -38,18 +42,23 @@ export function CommandPalette({ isOpen, onClose, onShowShortcuts }: CommandPale
   const inputRef = useRef<HTMLInputElement>(null);
 
   const commands: Command[] = [
-    { id: 'dashboard', label: 'Go to Dashboard', icon: LayoutDashboard, action: () => navigate('/'), keywords: ['home', 'main'] },
-    { id: 'dna', label: 'Go to DNA', icon: Dna, action: () => navigate('/dna'), keywords: ['identity', 'personality'] },
-    { id: 'memory', label: 'Go to Memory', icon: FolderOpen, action: () => navigate('/memory'), keywords: ['files', 'storage'] },
-    { id: 'skills', label: 'Go to Skills', icon: Zap, action: () => navigate('/skills'), keywords: ['abilities', 'features'] },
-    { id: 'crons', label: 'Go to Cron Jobs', icon: Clock, action: () => navigate('/crons'), keywords: ['schedule', 'tasks', 'automation'] },
-    { id: 'schedule', label: 'Go to Schedule', icon: Calendar, action: () => navigate('/schedule'), keywords: ['calendar', 'events'] },
-    { id: 'goals', label: 'Go to Goals', icon: Target, action: () => navigate('/goals'), keywords: ['objectives', 'targets'] },
-    { id: 'todos', label: 'Go to To-Do List', icon: CheckSquare, action: () => navigate('/todos'), keywords: ['tasks', 'checklist'] },
-    { id: 'missions', label: 'Go to Missions', icon: ListTodo, action: () => navigate('/missions'), keywords: ['queue', 'jobs'] },
-    { id: 'settings', label: 'Go to Settings', icon: Settings, action: () => navigate('/settings'), keywords: ['preferences', 'config'] },
-    { id: 'refresh', label: 'Refresh Dashboard', icon: RefreshCw, action: () => { window.location.reload(); }, keywords: ['reload', 'update'] },
-    { id: 'shortcuts', label: 'Show Keyboard Shortcuts', icon: Keyboard, action: () => { onClose(); onShowShortcuts(); }, keywords: ['keys', 'hotkeys', 'help'] },
+    { id: 'dashboard', label: 'Go to Dashboard', icon: LayoutDashboard, action: () => navigate('/'), keywords: ['home', 'main'], category: 'navigate' },
+    { id: 'dna', label: 'Go to DNA', icon: Dna, action: () => navigate('/dna'), keywords: ['identity', 'personality'], category: 'navigate' },
+    { id: 'memory', label: 'Go to Memory', icon: FolderOpen, action: () => navigate('/memory'), keywords: ['files', 'storage'], category: 'navigate' },
+    { id: 'skills', label: 'Go to Skills', icon: Zap, action: () => navigate('/skills'), keywords: ['abilities', 'features'], category: 'navigate' },
+    { id: 'crons', label: 'Go to Cron Jobs', icon: Clock, action: () => navigate('/crons'), keywords: ['schedule', 'tasks', 'automation'], category: 'navigate' },
+    { id: 'schedule', label: 'Go to Schedule', icon: Calendar, action: () => navigate('/schedule'), keywords: ['calendar', 'events'], category: 'navigate' },
+    { id: 'goals', label: 'Go to Goals', icon: Target, action: () => navigate('/goals'), keywords: ['objectives', 'targets'], category: 'navigate' },
+    { id: 'todos', label: 'Go to To-Do List', icon: CheckSquare, action: () => navigate('/todos'), keywords: ['tasks', 'checklist'], category: 'navigate' },
+    { id: 'missions', label: 'Go to Missions', icon: Compass, action: () => navigate('/missions'), keywords: ['queue', 'jobs'], category: 'navigate' },
+    { id: 'settings', label: 'Go to Settings', icon: Settings, action: () => navigate('/settings'), keywords: ['preferences', 'config'], category: 'navigate' },
+    { id: 'personal', label: 'Go to Personal', icon: User, action: () => navigate('/personal'), keywords: ['health', 'finance', 'habits'], category: 'navigate' },
+    { id: 'reports', label: 'Go to Reports', icon: BarChart2, action: () => navigate('/reports'), keywords: ['analytics'], category: 'navigate' },
+    { id: 'projects', label: 'Go to Projects', icon: FolderOpen, action: () => navigate('/projects'), keywords: ['code', 'repos'], category: 'navigate' },
+    { id: 'logs', label: 'Go to Logs', icon: ScrollText, action: () => navigate('/logs'), keywords: ['debug', 'output'], category: 'navigate' },
+    { id: 'files', label: 'Go to Files', icon: FolderOpen, action: () => navigate('/files'), keywords: ['editor', 'browse'], category: 'navigate' },
+    { id: 'refresh', label: 'Refresh Dashboard', icon: RefreshCw, action: () => { window.location.reload(); }, keywords: ['reload', 'update'], category: 'action' },
+    { id: 'shortcuts', label: 'Show Keyboard Shortcuts', icon: Keyboard, action: () => { onClose(); onShowShortcuts(); }, keywords: ['keys', 'hotkeys', 'help'], category: 'action' },
   ];
 
   const filteredCommands = commands.filter((cmd) => {
@@ -148,31 +157,44 @@ export function CommandPalette({ isOpen, onClose, onShowShortcuts }: CommandPale
                     No commands found
                   </div>
                 ) : (
-                  filteredCommands.map((cmd, index) => (
-                    <button
-                      key={cmd.id}
-                      onClick={() => executeCommand(cmd)}
-                      onMouseEnter={() => setSelectedIndex(index)}
-                      className={`w-full flex items-center gap-3 px-4 py-2.5 text-left ${
-                        index === selectedIndex
-                          ? 'bg-signal-primary/10 text-signal-primary'
-                          : 'text-text-muted hover:bg-surface-hover'
-                      }`}
-                    >
-                      <cmd.icon className="w-4 h-4" />
-                      <span className="flex-1">{cmd.label}</span>
-                      {index === selectedIndex && (
-                        <span className="text-xs text-text-dim">↵ to select</span>
-                      )}
-                    </button>
-                  ))
+                  filteredCommands.map((cmd, index) => {
+                    const prevCategory = index > 0 ? filteredCommands[index - 1].category : undefined;
+                    const showCategoryLabel = cmd.category && cmd.category !== prevCategory;
+                    return (
+                      <div key={cmd.id}>
+                        {showCategoryLabel && (
+                          <div className="px-4 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-widest text-text-dim select-none">
+                            {cmd.category}
+                          </div>
+                        )}
+                        <button
+                          onClick={() => executeCommand(cmd)}
+                          onMouseEnter={() => setSelectedIndex(index)}
+                          className={`w-full flex items-center gap-3 px-4 py-2.5 text-left ${
+                            index === selectedIndex
+                              ? 'bg-signal-primary/10 text-signal-primary'
+                              : 'text-text-muted hover:bg-surface-hover'
+                          }`}
+                        >
+                          <cmd.icon className="w-4 h-4" />
+                          <span className="flex-1">{cmd.label}</span>
+                          {index === selectedIndex && (
+                            <span className="text-xs text-text-dim">↵ to select</span>
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })
                 )}
               </div>
 
               {/* Footer hint */}
-              <div className="px-4 py-2 border-t border-[var(--color-border-panel)] bg-surface-base/50 flex items-center justify-between text-xs text-text-dim">
-                <span>↑↓ to navigate</span>
-                <span>↵ to select</span>
+              <div className="px-4 py-2 border-t border-[var(--color-border-panel)] bg-surface-base/50 flex items-center justify-center text-xs text-text-dim gap-3">
+                <span>Cmd+K to close</span>
+                <span className="opacity-40">·</span>
+                <span>↑↓ navigate</span>
+                <span className="opacity-40">·</span>
+                <span>↵ select</span>
               </div>
             </div>
           </motion.div>
