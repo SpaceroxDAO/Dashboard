@@ -91,7 +91,7 @@ export function ActivityHeatmap() {
                   return (
                     <div
                       key={hour}
-                      className={`flex-1 h-3 rounded-[2px] ${getIntensityClass(val, maxVal)} transition-colors`}
+                      className={`flex-1 h-2 rounded-[2px] ${getIntensityClass(val, maxVal)} transition-colors`}
                       title={`${day} ${hour}:00 — ${val} messages`}
                     />
                   );

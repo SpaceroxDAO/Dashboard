@@ -12,7 +12,7 @@ const statusConfig = {
   unknown: { icon: HelpCircle, color: 'text-text-dim', badge: 'default' as const },
 };
 
-export function ServiceControls({ onToast }: { onToast?: (msg: string, type: 'success' | 'error') => void }) {
+export function ServiceControls({ onToast, className }: { onToast?: (msg: string, type: 'success' | 'error') => void; className?: string }) {
   const [agentId] = useAtom(activeAgentIdAtom);
   const queryClient = useQueryClient();
   const [restarting, setRestarting] = useState<string | null>(null);
@@ -52,7 +52,7 @@ export function ServiceControls({ onToast }: { onToast?: (msg: string, type: 'su
   const isKira = agentId === 'kira';
 
   return (
-    <Card>
+    <Card className={className}>
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-sm font-medium text-text-muted flex items-center gap-2">
           <Server className="w-4 h-4" /> Services

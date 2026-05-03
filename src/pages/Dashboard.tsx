@@ -96,12 +96,12 @@ export function DashboardPage() {
           <SystemHealth />
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          <ActivityHeatmap />
-          <div className="space-y-3">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 lg:items-stretch">
+          <div className="flex flex-col gap-3">
+            <ActivityHeatmap />
             <RateLimits />
-            <ServiceControls onToast={handleToast} />
           </div>
+          <ServiceControls onToast={handleToast} className="h-full" />
         </div>
 
         {!isKira && (
