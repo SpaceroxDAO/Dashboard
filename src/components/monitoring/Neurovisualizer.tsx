@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAtom } from 'jotai';
 import { activeAgentIdAtom } from '@/store/atoms';
 import { getSSEUrl } from '@/services/api';
@@ -45,24 +45,29 @@ function reactionFor(evt: { type: string; channel?: string; toolStatus?: string 
   return null;
 }
 
-// Cellular-cortex palette: base/accent/bright/soft are cyan/green/white/magenta.
-// Returns a CSS color for hue-cycling pixels.
+// Palette mapped to the dashboard's warm amber theme.
+// Reference CSS vars (src/index.css):
+//   surface-base   #1a1510  warm-dark-brown   →  background
+//   signal-primary #e07832  orange   ≈ hsl(22°, 75%, 53%) →  accent ring
+//   signal-secondary #d4a04a amber   ≈ hsl(38°, 60%, 56%) →  soft tier
+//   text-bright    #faf3e8  cream    ≈ hsl(35°, 50%, 95%) →  bright tier
+//   text-dim       #7a6e5a  tan      ≈ hsl(35°, 15%, 42%) →  base tier
+//   signal-alert   #ef4444  red                            →  error palette
 function hueColor(v: number, phase: number, alpha: number, isError = false): string {
   if (isError) {
-    // palette_shift to red/yellow on error
-    const hue = 10 + phase * 40;
-    return `hsla(${hue}, 90%, ${30 + v * 50}%, ${alpha})`;
+    // palette_shift to red/yellow on error (matches dashboard signal-alert)
+    const hue = 5 + phase * 45;
+    return `hsla(${hue}, 85%, ${30 + v * 50}%, ${alpha})`;
   }
-  // Cyan (180) → green (140) → magenta (300) cycle
-  const tiers = [180, 150, 0, 300]; // cyan / green / white-ish / magenta
+  // Warm amber spectrum: tan (35°) → amber (38°) → orange (22°) → cream (35°)
   const s = (v + phase) % 1;
   let hue: number;
-  let lightness = 30 + v * 40;
-  let sat = 70;
-  if (s > 0.72)      { hue = tiers[2]; lightness = 75; sat = 5; }   // bright/white
-  else if (s > 0.48) { hue = tiers[1]; }                             // accent/green
-  else if (s > 0.24) { hue = tiers[3]; sat = 60; }                  // soft/magenta
-  else               { hue = tiers[0]; lightness = 25; }             // base/cyan dim
+  let lightness: number;
+  let sat: number;
+  if (s > 0.72)      { hue = 35; lightness = 88; sat = 45; }       // bright/cream
+  else if (s > 0.48) { hue = 22; lightness = 50 + v * 10; sat = 75; } // accent/orange
+  else if (s > 0.24) { hue = 38; lightness = 48; sat = 60; }       // soft/amber
+  else               { hue = 30; lightness = 22; sat = 35; }       // base/dim tan
   return `hsla(${hue}, ${sat}%, ${lightness}%, ${alpha})`;
 }
 
@@ -77,6 +82,14 @@ export function Neurovisualizer({ height = 192 }: NeurovisualizerProps) {
   const reactionsRef = useRef<Reaction[]>([]);
   const frameRef = useRef(0);
 
+  // Live-event meter — proves the visualizer is reacting to real Hermes events
+  // beyond just the on-connect backfill. Counts events received since mount and
+  // tracks the timestamp of the most recent one so the user can see the
+  // heartbeat even when no module is currently pulsing.
+  const [eventCount, setEventCount] = useState(0);
+  const [lastEventAt, setLastEventAt] = useState<number | null>(null);
+  const [, setTick] = useState(0); // re-render every second to update "Xs ago"
+
   // SSE: collect events as cortex reactions
   useEffect(() => {
     const es = new EventSource(getSSEUrl(agentId));
@@ -86,15 +99,22 @@ export function Neurovisualizer({ height = 192 }: NeurovisualizerProps) {
         const r = reactionFor(data);
         if (r) {
           reactionsRef.current.push(r);
-          // Cap reactions list so it doesn't grow unbounded
           if (reactionsRef.current.length > 200) {
             reactionsRef.current = reactionsRef.current.slice(-100);
           }
+          setEventCount(c => c + 1);
+          setLastEventAt(Date.now());
         }
       } catch { /* skip */ }
     });
     return () => es.close();
   }, [agentId]);
+
+  // Tick once per second so the "Xs ago" indicator updates smoothly
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   // Resize canvas to container
   useEffect(() => {
@@ -132,8 +152,8 @@ export function Neurovisualizer({ height = 192 }: NeurovisualizerProps) {
       const f = ++frameRef.current;
       const now = Date.now();
 
-      // Clear with deep-cyan background (cellular-cortex base)
-      ctx.fillStyle = '#02060a';
+      // Background: dashboard surface-base warm-dark-brown
+      ctx.fillStyle = '#1a1510';
       ctx.fillRect(0, 0, w, h);
 
       // Active reactions per module
@@ -206,24 +226,26 @@ export function Neurovisualizer({ height = 192 }: NeurovisualizerProps) {
         const isError = act?.isError || false;
 
         // Activity ring expands outward as the reaction fades
+        // Normal: signal-primary orange #e07832 / Error: signal-alert red #ef4444
         if (activity > 0) {
           ctx.beginPath();
           const ringRadius = 14 + (1 - activity) * 60;
           ctx.arc(px, py, ringRadius, 0, Math.PI * 2);
           ctx.strokeStyle = isError
-            ? `rgba(255, 80, 80, ${activity})`
-            : `rgba(120, 255, 220, ${activity})`;
+            ? `rgba(239, 68, 68, ${activity})`
+            : `rgba(224, 120, 50, ${activity})`;
           ctx.lineWidth = 2;
           ctx.stroke();
         }
 
         const label = m.icon + ' ' + m.name;
-        // Subtle drop-shadow so labels read against the cell color
-        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        // Drop shadow against the warm background
+        ctx.fillStyle = 'rgba(0,0,0,0.75)';
         ctx.fillText(label, px + 1, py + 1);
+        // Active: text-bright cream / Error: light red / Idle: text-muted warm tan
         ctx.fillStyle = activity > 0.4
-          ? (isError ? '#ffb0b0' : '#ffffff')
-          : `rgba(220, 240, 255, ${0.6 + 0.4 * pulse})`;
+          ? (isError ? '#fca5a5' : '#faf3e8')
+          : `rgba(176, 160, 138, ${0.55 + 0.45 * pulse})`;
         ctx.fillText(label, px, py);
       }
     };
@@ -231,9 +253,23 @@ export function Neurovisualizer({ height = 192 }: NeurovisualizerProps) {
     return () => cancelAnimationFrame(raf);
   }, []);
 
+  const ageSec = lastEventAt ? Math.floor((Date.now() - lastEventAt) / 1000) : null;
+  const ageLabel = ageSec === null
+    ? 'awaiting…'
+    : ageSec < 2 ? 'just now'
+    : ageSec < 60 ? `${ageSec}s ago`
+    : ageSec < 3600 ? `${Math.floor(ageSec / 60)}m ago`
+    : `${Math.floor(ageSec / 3600)}h ago`;
+  // Pulse the dot for ~1s after each event
+  const livePulse = ageSec !== null && ageSec < 1;
+
   return (
     <div ref={wrapRef} style={{ height }} className="w-full relative overflow-hidden rounded">
       <canvas ref={canvasRef} className="block" />
+      <div className="absolute top-1 left-2 text-[9px] font-mono pointer-events-none flex items-center gap-1.5">
+        <span className={`inline-block w-1.5 h-1.5 rounded-full ${livePulse ? 'bg-signal-primary animate-ping' : 'bg-signal-primary/60'}`} />
+        <span className="text-text-muted">{eventCount} events · last {ageLabel}</span>
+      </div>
       <div className="absolute top-1 right-2 text-[9px] text-text-dim font-mono opacity-50 pointer-events-none">
         cellular-cortex
       </div>
