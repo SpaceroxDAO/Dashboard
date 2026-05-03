@@ -945,18 +945,13 @@ async function backfillAgentFeed(agent: AgentId, res: Response) {
     if (agent === 'finn') {
       const content = await fs.readFile(FINN_NEUROVISION_PATH, 'utf-8').catch(() => '');
       const lines = content.trim().split('\n').filter(Boolean);
-      // Take the last ~40 lines so the backfill includes a few full turns
-      for (const line of lines.slice(-40)) {
+      // Include the full event stream (tools + turns) so the backfill matches
+      // what the Hermes neurovisualizer shows — agents-doing-things activity,
+      // not just human-readable turn boundaries. The frontend has a Wrench
+      // toggle to hide tools if the user wants a quieter view.
+      for (const line of lines.slice(-200)) {
         const events = parseNeurovisionEvent(line);
-        if (events) {
-          for (const evt of events) {
-            // Skip raw tool plumbing in backfill — the visible turn boundaries (user/assistant)
-            // give the user enough context on connect; tools then stream live as they happen.
-            if (evt.type !== 'tool_call' && evt.type !== 'tool_result') {
-              recentEvents.push(evt);
-            }
-          }
-        }
+        if (events) recentEvents.push(...events);
       }
     } else {
       const allWithStats: Array<{ f: string; fPath: string; mtimeMs: number }> = [];
@@ -991,7 +986,8 @@ async function backfillAgentFeed(agent: AgentId, res: Response) {
     }
 
     recentEvents.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-    for (const evt of recentEvents.slice(-20)) {
+    // 80 ≈ a few turns including their tool fan-out; below the frontend's MAX_MESSAGES (100)
+    for (const evt of recentEvents.slice(-80)) {
       try { res.write(`event: message\ndata: ${JSON.stringify(evt)}\n\n`); } catch { break; }
     }
   } catch { /* skip */ }
