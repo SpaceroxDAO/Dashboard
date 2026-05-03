@@ -28,24 +28,26 @@ interface Reaction {
 // ripple), (tool_error → tools shatter/red), (llm_chunk → model stream),
 // (agent_start → core pulse), (cron_tick → cron orbit). The dashboard SSE
 // surfaces user/assistant/tool_call/tool_result/compaction/model_change.
+//
+// Durations are deliberately long (8–14s). Combined with the sub-pulse
+// oscillation inside the render loop's intensity calc, each event keeps its
+// module visibly throbbing for ~10s rather than briefly flashing — so an
+// active turn (5+ tool calls + assistant reply) leaves the cortex looking
+// sustained-active for ~20–30s, then settles.
 function reactionFor(evt: { type: string; channel?: string; toolStatus?: string }): Reaction | null {
   const now = Date.now();
   if (evt.type === 'user') {
-    if (evt.channel === 'cron') return { module: 'cron', kind: 'ripple', start: now, duration: 3000 };
-    return { module: 'core', kind: 'pulse', start: now, duration: 2500 };
+    if (evt.channel === 'cron') return { module: 'cron', kind: 'ripple', start: now, duration: 12000 };
+    return { module: 'core', kind: 'pulse', start: now, duration: 12000 };
   }
-  if (evt.type === 'assistant') return { module: 'model', kind: 'pulse', start: now, duration: 1800 };
-  // Tool calls linger longer — Hermes often fires several in quick succession
-  // within one agent:step, and a too-short ripple makes the burst feel like a
-  // strobe. ~4s lets adjacent reactions blend into a sustained "tools active"
-  // state instead of a flicker.
-  if (evt.type === 'tool_call') return { module: 'tools', kind: 'ripple', start: now, duration: 4000 };
+  if (evt.type === 'assistant') return { module: 'model', kind: 'pulse', start: now, duration: 12000 };
+  if (evt.type === 'tool_call') return { module: 'tools', kind: 'ripple', start: now, duration: 14000 };
   if (evt.type === 'tool_result') {
-    if (evt.toolStatus === 'error') return { module: 'tools', kind: 'shatter', start: now, duration: 3000 };
-    return { module: 'tools', kind: 'ripple', start: now, duration: 2000 };
+    if (evt.toolStatus === 'error') return { module: 'tools', kind: 'shatter', start: now, duration: 12000 };
+    return { module: 'tools', kind: 'ripple', start: now, duration: 8000 };
   }
-  if (evt.type === 'compaction') return { module: 'memory', kind: 'pulse', start: now, duration: 2500 };
-  if (evt.type === 'model_change') return { module: 'model', kind: 'pulse', start: now, duration: 2500 };
+  if (evt.type === 'compaction') return { module: 'memory', kind: 'pulse', start: now, duration: 14000 };
+  if (evt.type === 'model_change') return { module: 'model', kind: 'pulse', start: now, duration: 10000 };
   return null;
 }
 
@@ -173,12 +175,20 @@ export function Neurovisualizer({ height = 192 }: NeurovisualizerProps) {
       ctx.fillStyle = '#1a1510';
       ctx.fillRect(0, 0, w, h);
 
-      // Active reactions per module
+      // Active reactions per module. Each reaction's intensity is the product
+      // of an envelope (1→0 over the duration) and a sub-pulse oscillation
+      // (0.55..1.0 sine wave at ~0.55Hz). The oscillation makes the module
+      // visibly throb instead of fading flat — so a single event reads as
+      // "this module is busy for a while" rather than a brief flash.
+      const SUB_PULSE_PERIOD_MS = 1800;
       const moduleActivity: Record<string, { intensity: number; isError: boolean }> = {};
       reactionsRef.current = reactionsRef.current.filter(r => now - r.start < r.duration);
       for (const r of reactionsRef.current) {
-        const elapsed = (now - r.start) / r.duration;
-        const intensity = Math.max(0, 1 - elapsed);
+        const ageMs = now - r.start;
+        const envelope = Math.max(0, 1 - ageMs / r.duration);
+        const subPhase = (ageMs % SUB_PULSE_PERIOD_MS) / SUB_PULSE_PERIOD_MS;
+        const subPulse = 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(subPhase * Math.PI * 2));
+        const intensity = envelope * subPulse;
         const cur = moduleActivity[r.module];
         const isError = r.kind === 'shatter';
         if (!cur || cur.intensity < intensity) {
@@ -259,19 +269,34 @@ export function Neurovisualizer({ height = 192 }: NeurovisualizerProps) {
         const activity = act?.intensity || 0;
         const isError = act?.isError || false;
 
-        // Activity ring expands outward as the reaction fades. Capped well
-        // inside the module's Voronoi cell so it doesn't visually invade
-        // adjacent modules and create the impression they're firing too.
-        // Normal: signal-primary orange #e07832 / Error: signal-alert red #ef4444
-        if (activity > 0) {
-          ctx.beginPath();
-          const ringRadius = 10 + (1 - activity) * 28;
-          ctx.arc(px, py, ringRadius, 0, Math.PI * 2);
-          ctx.strokeStyle = isError
-            ? `rgba(239, 68, 68, ${activity})`
-            : `rgba(224, 120, 50, ${activity})`;
-          ctx.lineWidth = 2;
-          ctx.stroke();
+        // Activity rings: emit a fresh expanding wave on every sub-pulse beat
+        // for as long as this module has any active reactions. Each wave
+        // expands from center → edge over RING_LIFE_MS while fading. The
+        // result reads as a throbbing module emitting waves at ~0.55Hz, vs
+        // the previous single-ring single-fade.
+        const RING_LIFE_MS = 1800;
+        const RING_INTERVAL_MS = 1000;
+        const RING_MAX_RADIUS = 38;
+        const moduleReactions = reactionsRef.current.filter(r => r.module === m.name);
+        for (const r of moduleReactions) {
+          const ageMs = now - r.start;
+          // First wave at t=0, then one every RING_INTERVAL_MS until reaction ends
+          const waveCount = Math.floor(ageMs / RING_INTERVAL_MS) + 1;
+          for (let w = 0; w < waveCount; w++) {
+            const waveAge = ageMs - w * RING_INTERVAL_MS;
+            if (waveAge < 0 || waveAge > RING_LIFE_MS) continue;
+            const t = waveAge / RING_LIFE_MS; // 0..1
+            const radius = 8 + t * RING_MAX_RADIUS;
+            const alpha = (1 - t) * Math.max(0, 1 - ageMs / r.duration);
+            if (alpha < 0.05) continue;
+            ctx.beginPath();
+            ctx.arc(px, py, radius, 0, Math.PI * 2);
+            ctx.strokeStyle = isError
+              ? `rgba(239, 68, 68, ${alpha})`
+              : `rgba(224, 120, 50, ${alpha})`;
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+          }
         }
 
         const label = m.icon + ' ' + m.name;
