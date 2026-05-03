@@ -7,9 +7,19 @@
  * When running standalone or on Vercel, connects via Tailscale Funnel.
  */
 
+// Production uses a RELATIVE path so the browser always sees same-origin
+// requests:
+//   • On Vercel (https://agent-dashboard-sand.vercel.app/) → vercel.json
+//     rewrites /dashboard-api/* server-side to the rexiii Funnel. The browser
+//     never talks to rexiii directly, so Chrome PNA can't block it (which it
+//     would when the user is on the rexiii Tailnet and the hostname resolves
+//     to the private 100.x.x.x IP).
+//   • On rexiii direct (https://rexiii.tailf846b2.ts.net/) → Tailscale Funnel
+//     strips /dashboard-api/ and forwards to the local Express server. Same
+//     URL works for both deployments.
 export const API_BASE = import.meta.env.DEV
   ? 'http://localhost:3001'
-  : 'https://rexiii.tailf846b2.ts.net/dashboard-api';
+  : '/dashboard-api';
 
 export interface FileInfo {
   id: string;
