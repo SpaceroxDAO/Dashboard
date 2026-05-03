@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAtom } from 'jotai';
 import { activeAgentIdAtom } from '@/store/atoms';
-import { getSSEUrl } from '@/services/api';
+import { getSSEUrl, API_BASE } from '@/services/api';
 
 // Mirrors the 6 module nodes from Hermes' cellular-cortex theme
 // (theme_plugins/ascii_fields.py CellularCortexPlugin._MODULES).
@@ -34,17 +34,27 @@ interface Reaction {
 // module visibly throbbing for ~10s rather than briefly flashing — so an
 // active turn (5+ tool calls + assistant reply) leaves the cortex looking
 // sustained-active for ~20–30s, then settles.
-function reactionFor(evt: { type: string; channel?: string; toolStatus?: string }): Reaction | null {
+// Tools whose purpose is memory operations — calls and results route to the
+// `memory` module instead of `tools`. Matches Hermes' built-in memory + the
+// session_search recall tool.
+const MEMORY_TOOLS = new Set(['memory', 'session_search']);
+
+function reactionFor(evt: { type: string; channel?: string; toolStatus?: string; toolName?: string }): Reaction | null {
   const now = Date.now();
   if (evt.type === 'user') {
     if (evt.channel === 'cron') return { module: 'cron', kind: 'ripple', start: now, duration: 12000 };
     return { module: 'core', kind: 'pulse', start: now, duration: 12000 };
   }
   if (evt.type === 'assistant') return { module: 'model', kind: 'pulse', start: now, duration: 12000 };
-  if (evt.type === 'tool_call') return { module: 'tools', kind: 'ripple', start: now, duration: 14000 };
+  if (evt.type === 'tool_call') {
+    const isMemory = evt.toolName && MEMORY_TOOLS.has(evt.toolName);
+    return { module: isMemory ? 'memory' : 'tools', kind: 'ripple', start: now, duration: 14000 };
+  }
   if (evt.type === 'tool_result') {
-    if (evt.toolStatus === 'error') return { module: 'tools', kind: 'shatter', start: now, duration: 12000 };
-    return { module: 'tools', kind: 'ripple', start: now, duration: 8000 };
+    // Errors from any tool route to aegis — the safety/alarm module
+    if (evt.toolStatus === 'error') return { module: 'aegis', kind: 'shatter', start: now, duration: 12000 };
+    const isMemory = evt.toolName && MEMORY_TOOLS.has(evt.toolName);
+    return { module: isMemory ? 'memory' : 'tools', kind: 'ripple', start: now, duration: 8000 };
   }
   if (evt.type === 'compaction') return { module: 'memory', kind: 'pulse', start: now, duration: 14000 };
   if (evt.type === 'model_change') return { module: 'model', kind: 'pulse', start: now, duration: 10000 };
@@ -134,6 +144,45 @@ export function Neurovisualizer({ height = 192 }: NeurovisualizerProps) {
     const id = setInterval(() => setTick(t => t + 1), 1000);
     return () => clearInterval(id);
   }, []);
+
+  // Cron polling — neurovision events.jsonl doesn't carry a "cron fired"
+  // signal (all platform=telegram), so we poll the crons endpoint every 10s
+  // and pulse the `cron` module whenever the max lastRunAt across jobs
+  // advances. The first poll establishes the baseline; only subsequent
+  // increases trigger a reaction (so we don't fire on mount from history).
+  useEffect(() => {
+    let baselineMs = -1;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/agents/${agentId}/crons`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const crons: Array<{ lastRunAt?: string }> = data?.crons || [];
+        let maxMs = 0;
+        for (const c of crons) {
+          if (!c.lastRunAt) continue;
+          const t = new Date(c.lastRunAt).getTime();
+          if (t > maxMs) maxMs = t;
+        }
+        if (cancelled) return;
+        if (baselineMs === -1) {
+          baselineMs = maxMs;
+        } else if (maxMs > baselineMs) {
+          // A cron just fired in the last poll interval
+          reactionsRef.current.push({ module: 'cron', kind: 'ripple', start: Date.now(), duration: 14000 });
+          setEventCount(c => c + 1);
+          const nowT = Date.now();
+          setLastEventAt(nowT);
+          lastEventAtRef.current = nowT;
+          baselineMs = maxMs;
+        }
+      } catch { /* skip — endpoint may briefly be unreachable */ }
+    };
+    poll();
+    const id = setInterval(poll, 10_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [agentId]);
 
   // Resize canvas to container
   useEffect(() => {

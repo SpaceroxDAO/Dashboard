@@ -7,7 +7,7 @@
  * When running standalone or on Vercel, connects via Tailscale Funnel.
  */
 
-const API_BASE = import.meta.env.DEV
+export const API_BASE = import.meta.env.DEV
   ? 'http://localhost:3001'
   : 'https://rexiii.tailf846b2.ts.net/dashboard-api';
 
