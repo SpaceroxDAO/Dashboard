@@ -89,6 +89,8 @@ const MODEL_PRICING: Record<string, { input: number; output: number; cacheWrite:
   'claude-sonnet-4-6':           { input: 3,    output: 15,   cacheWrite: 3.75,  cacheRead: 0.30 },
   'claude-sonnet-4-20250514':    { input: 3,    output: 15,   cacheWrite: 3.75,  cacheRead: 0.30 },
   'claude-haiku-4-5-20251101':   { input: 0.80, output: 4,    cacheWrite: 1.00,  cacheRead: 0.08 },
+  // GPT-5.5: $5/1M input, $30/1M output (OpenAI API list price, April 2026)
+  'gpt-5.5':                     { input: 5,    output: 30,   cacheWrite: 5,     cacheRead: 2.50 },
   // Fallback applied in code for unknown models
 };
 
@@ -194,24 +196,7 @@ async function parseSessionFile(filePath: string): Promise<SessionCost | null> {
         } catch { /* skip malformed lines */ }
       }
       if (messageCount === 0) return null;
-      // Subscription plan — no per-token cost. Return early with zero cost.
       model = model === 'unknown' ? 'gpt-5.5' : model;
-      const sessionId = path.basename(filePath, '.jsonl');
-      const project = path.basename(path.dirname(filePath));
-      return {
-        sessionId,
-        project,
-        model,
-        date: firstDate || new Date().toISOString().slice(0, 10),
-        inputTokens,
-        outputTokens,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-        totalCost: 0,
-        cacheSavings: 0,
-        messageCount,
-        lastActivity: lastTimestamp,
-      };
     } else {
     for (const line of lines) {
       try {

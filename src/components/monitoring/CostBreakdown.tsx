@@ -63,8 +63,8 @@ export function CostBreakdown() {
     .filter(([name]) => name !== 'unknown')
     .sort(([, a], [, b]) => b.tokens - a.tokens);
 
-  // Finn: subscription plan — GPT-5.5 via ChatGPT Pro, no per-token billing
-  const isFinnSubscriptionView = agentId === 'finn' && data.totalCost === 0;
+  // Finn: subscription plan — GPT-5.5 via ChatGPT Pro. Show API-equivalent cost.
+  const isFinnSubscriptionView = agentId === 'finn';
 
   // Kira: token-centric view (free tier, totalCost is always 0)
   const isKiraTokenView = agentId === 'kira' && data.totalCost === 0 && data.totalInputTokens > 0;
@@ -76,37 +76,67 @@ export function CostBreakdown() {
       <Card>
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-medium text-text-muted flex items-center gap-2">
-            <Zap className="w-4 h-4" /> Activity (30d)
+            <DollarSign className="w-4 h-4" /> API Equivalent Cost (30d)
           </h3>
-          <Badge variant="info">ChatGPT Pro</Badge>
+          <Badge variant="info">ChatGPT Pro sub</Badge>
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
           <div>
+            <div className="text-xl font-semibold text-text-bright">{formatCost(data.totalCost)}</div>
+            <div className="text-xs text-text-dim flex items-center gap-1">
+              <TrendingUp className="w-3 h-3" /> Est. API cost
+            </div>
+          </div>
+          <div>
+            <div className="text-xl font-semibold text-text-bright">{formatCost(data.monthlyProjection)}</div>
+            <div className="text-xs text-text-dim">Monthly proj.</div>
+          </div>
+          <div>
             <div className="text-xl font-semibold text-text-bright">{data.recentSessions.length}</div>
-            <div className="text-xs text-text-dim">Sessions</div>
-          </div>
-          <div>
-            <div className="text-xl font-semibold text-text-bright">{totalMessages}</div>
-            <div className="text-xs text-text-dim">Messages</div>
-          </div>
-          <div>
-            <div className="text-xl font-semibold text-signal-online">{formatTokens(data.totalOutputTokens)}</div>
-            <div className="text-xs text-text-dim">Output est.</div>
+            <div className="text-xs text-text-dim">Sessions ({totalMessages} msgs)</div>
           </div>
           <div>
             <div className="text-xl font-semibold text-text-bright">{formatTokens(totalTokens)}</div>
-            <div className="text-xs text-text-dim">Total tokens est.</div>
+            <div className="text-xs text-text-dim">Tokens est.</div>
           </div>
         </div>
 
         {dailyValues.length >= 2 && (
           <div className="mb-4">
-            <div className="text-xs text-text-dim mb-1">Daily tokens (estimated)</div>
+            <div className="text-xs text-text-dim mb-1">Daily API equivalent spend</div>
             <Sparkline data={dailyValues} height={40} />
             <div className="flex justify-between text-[10px] text-text-dim mt-1">
               <span>{dailyEntries[0]?.[0]?.slice(5)}</span>
               <span>{dailyEntries[dailyEntries.length - 1]?.[0]?.slice(5)}</span>
+            </div>
+          </div>
+        )}
+
+        {models.length > 0 && (
+          <div>
+            <div className="text-xs text-text-dim mb-2">By model</div>
+            <div className="space-y-1.5">
+              {models.map(([name, info]) => {
+                const pct = data.totalCost > 0 ? (info.cost / data.totalCost) * 100 : 0;
+                return (
+                  <div key={name} className="flex items-center gap-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between text-xs mb-0.5">
+                        <span className="text-text-bright truncate font-mono">{name}</span>
+                        <span className="text-text-dim flex-shrink-0 ml-2">{formatCost(info.cost)}</span>
+                      </div>
+                      <div className="h-1 bg-surface-hover rounded-full overflow-hidden">
+                        <motion.div
+                          initial={{ width: 0 }}
+                          animate={{ width: `${pct}%` }}
+                          className="h-full bg-signal-primary rounded-full"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
