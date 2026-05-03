@@ -5,7 +5,6 @@ import { PageContainer } from '@/components/layout';
 import {
   HealthWidgetV2,
   QuickActions,
-  JobPipeline,
   PeopleWidget,
   HabitsWidget,
   FinanceWidgetV2,
@@ -38,13 +37,10 @@ export function PersonalPage() {
           <h1 className="text-lg font-bold text-text-bright">Personal</h1>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          <HealthWidgetV2 />
-          <FinanceWidgetV2 />
-        </div>
+        <HealthWidgetV2 />
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          <JobPipeline />
+          <FinanceWidgetV2 />
           <PeopleWidget />
         </div>
 
