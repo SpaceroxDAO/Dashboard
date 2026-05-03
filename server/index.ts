@@ -37,10 +37,13 @@ function agentMemoryPath(agentId: string): string {
   return path.join(agentBasePath(agentId), 'memory');
 }
 
-/** Get OpenClaw state path for an agent */
+/** Get runtime state path for an agent.
+ *  Finn now lives on Hermes (~/.hermes), Kira still on OpenClaw on Windows-native
+ *  (read from the Windows mount when the dashboard server runs in WSL). */
 function agentOpenClawPath(agentId: string): string {
-  if (agentId === 'finn') return path.join(os.homedir(), '.openclaw-finn');
-  return path.join(os.homedir(), '.openclaw');
+  if (agentId === 'finn') return path.join(os.homedir(), '.hermes');
+  // Kira's OpenClaw config lives on the Windows side of RexIII
+  return '/mnt/c/Users/adami/.openclaw';
 }
 
 // Chrome Private Network Access: must come BEFORE cors() to handle preflight
@@ -56,6 +59,11 @@ app.use((req, res, next) => {
 });
 app.use(cors());
 app.use(express.json());
+
+// Serve the built React SPA from dist/ (same-origin avoids Chrome PNA blocking
+// when the dashboard is hit via Tailscale Funnel from a public Vercel page).
+const DIST_PATH = path.join(AGENTS_BASE_PATH, 'agent-dashboard', 'dist');
+app.use(express.static(DIST_PATH));
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -793,14 +801,41 @@ interface CronEntry {
   state?: { lastRunAtMs?: number; lastStatus?: string; lastDurationMs?: number; runCount?: number; lastError?: string };
 }
 
-/** Read crons.json which has shape { version, jobs: CronEntry[] } */
+/** Normalize a Hermes jobs.json entry into the dashboard's CronEntry shape.
+ *  OpenClaw entries (which already have payload/delivery/state nested) are passed through. */
+function normalizeHermesJob(entry: any): CronEntry {
+  if (entry?.payload || entry?.delivery) return entry as CronEntry; // already OpenClaw-shaped
+  return {
+    id: entry.id,
+    name: entry.name,
+    enabled: entry.enabled !== false,
+    schedule: entry.schedule || { kind: 'unknown' },
+    payload: {
+      kind: 'agent',
+      message: entry.prompt || '',
+    },
+    delivery: entry.deliver ? {
+      mode: 'best-effort',
+      channel: entry.deliver,
+      to: '',
+    } : undefined,
+    state: {
+      lastStatus: entry.last_status || undefined,
+      lastRunAtMs: entry.last_run_at ? new Date(entry.last_run_at).getTime() : undefined,
+      lastError: entry.last_error || undefined,
+    },
+  };
+}
+
+/** Read crons.json which has shape { version, jobs: CronEntry[] } (OpenClaw or Hermes). */
 function readCronJobs(data: unknown): CronEntry[] {
   if (!data) return [];
-  if (Array.isArray(data)) return data;
-  if (typeof data === 'object' && data !== null && 'jobs' in data && Array.isArray((data as any).jobs)) {
-    return (data as any).jobs;
+  let arr: any[] = [];
+  if (Array.isArray(data)) arr = data;
+  else if (typeof data === 'object' && data !== null && 'jobs' in data && Array.isArray((data as any).jobs)) {
+    arr = (data as any).jobs;
   }
-  return [];
+  return arr.map(normalizeHermesJob);
 }
 
 function everyMsToHumanReadable(ms: number): string {
@@ -861,7 +896,7 @@ app.get('/api/agents/:agentId/crons', async (req, res) => {
     if (agentId === 'finn') {
       // Try live gateway state first, fall back to workspace crons.json
       let rawCrons = await readJsonFile(FINN_LIVE_CRONS_PATH);
-      let cronSource = 'openclaw-gateway';
+      let cronSource = 'hermes';
       if (!rawCrons) {
         rawCrons = await readJsonFile(FINN_WORKSPACE_CRONS_PATH);
         cronSource = 'crons.json';
@@ -893,39 +928,9 @@ app.get('/api/agents/:agentId/crons', async (req, res) => {
         });
       }
 
-      // Parse launchd plists
-      try {
-        const plistFiles = await fs.readdir(LAUNCHD_PATH);
-        for (const file of plistFiles.filter(f => f.endsWith('.plist'))) {
-          const content = await fs.readFile(path.join(LAUNCHD_PATH, file), 'utf-8');
-          const labelMatch = content.match(/<key>Label<\/key>\s*<string>(.+?)<\/string>/);
-          const hourMatch = content.match(/<key>Hour<\/key>\s*<integer>(\d+)<\/integer>/);
-          const minuteMatch = content.match(/<key>Minute<\/key>\s*<integer>(\d+)<\/integer>/);
-          const scriptMatch = content.match(/<string>(\/[^<]+\.(sh|py|js))<\/string>/);
-          const label = labelMatch?.[1] || file.replace('.plist', '');
-          const name = label.replace('com.finn.', '');
-
-          // Skip if already in crons.json
-          if (crons.some(c => c.id === name)) continue;
-
-          const hour = hourMatch?.[1] || '0';
-          const minute = minuteMatch?.[1] || '0';
-          crons.push({
-            id: name,
-            agentId: 'finn',
-            name: prettyCategoryName(name),
-            description: scriptMatch ? `Runs ${path.basename(scriptMatch[1])}` : 'launchd scheduled task',
-            schedule: {
-              cron: `${minute} ${hour} * * *`,
-              timezone: 'America/New_York',
-              humanReadable: `Daily at ${hour}:${minute.padStart(2, '0')}`,
-            },
-            status: 'active',
-            taskGroup: 'launchd',
-            source: 'launchd',
-          });
-        }
-      } catch { /* no launchd directory */ }
+      // launchd plist parsing removed — macOS VM is decommissioned and the plists
+      // are now duplicates of the Hermes crons above. The .plist files survive in
+      // ~/finn/scripts/launchd/ as historical reference but are not active anywhere.
     }
 
     if (agentId === 'kira') {
@@ -983,37 +988,44 @@ app.get('/api/agents/:agentId/crons', async (req, res) => {
   }
 });
 
-// POST /api/crons/:cronId/run -- trigger cron via OpenClaw gateway
+// POST /api/crons/:cronId/run -- trigger cron (Hermes for Finn, OpenClaw for Kira)
 app.post('/api/crons/:cronId/run', async (req, res) => {
   try {
     const { cronId } = req.params;
-    const { agentId } = req.body; // Optional: 'finn' or 'kira'
-
-    // Determine which agent this cron belongs to
+    const { agentId } = req.body;
     const isKiraCron = agentId === 'kira' || cronId.startsWith('kira-');
 
-    // Both agents are local — resolve UUID and run via openclaw CLI
+    // Resolve cron name → UUID via the agent's jobs.json
     let cronUuid = isKiraCron ? cronId.replace('kira-', '') : cronId;
     const jobsPath = isKiraCron ? KIRA_LIVE_CRONS_PATH : FINN_LIVE_CRONS_PATH;
-
     try {
       const jobsData = await readJsonFile(jobsPath);
       const jobs = readCronJobs(jobsData);
       const match = jobs.find((j: any) => j.name === cronUuid || j.id === cronUuid);
-      if (match) {
-        cronUuid = match.id;
-      }
-    } catch { /* use cronId as-is, might already be a UUID */ }
+      if (match) cronUuid = match.id;
+    } catch { /* use cronId as-is */ }
 
+    if (isKiraCron) {
+      // Kira runs on Windows-native OpenClaw; the dashboard runs in WSL where the openclaw
+      // CLI isn't installed. Need cmd.exe bridge — not yet wired.
+      return res.json({
+        success: false,
+        cronId,
+        error: 'Kira cron execution not wired from WSL dashboard yet (Kira runs on Windows-native OpenClaw)',
+        method: 'kira-not-wired',
+        executedAt: new Date().toISOString(),
+      });
+    }
+
+    // Finn: hermes cron run <id>
     const { stdout, stderr } = await execAsync(
-      `openclaw cron run ${cronUuid}`,
+      `hermes cron run ${cronUuid}`,
       { timeout: 120000 }
     );
-
     res.json({
       success: true,
       cronId,
-      method: 'openclaw-gateway',
+      method: 'hermes',
       output: stdout.substring(0, 5000),
       stderr: stderr ? stderr.substring(0, 2000) : undefined,
       executedAt: new Date().toISOString(),
@@ -1024,7 +1036,7 @@ app.post('/api/crons/:cronId/run', async (req, res) => {
       success: false,
       cronId: req.params.cronId,
       error: error.message || 'Cron execution failed',
-      method: 'openclaw-gateway',
+      method: 'hermes',
       executedAt: new Date().toISOString(),
     });
   }
@@ -1359,11 +1371,16 @@ app.post('/api/quick-actions/:actionId/execute', async (req, res) => {
         return res.status(400).json({ error: 'Cron action missing cronName' });
       }
 
-      // Resolve cron name to UUID since openclaw cron run requires UUIDs
+      // Resolve cron name to UUID — required by both hermes and openclaw cron run
       const cronId = await resolveCronId(action.cronName, action.agent);
 
       // Fire-and-forget: spawn cron run in background, don't wait for completion
-      const child = spawn('openclaw', ['cron', 'run', '--timeout', '300000', cronId], {
+      // Finn runs on Hermes; Kira runs on Windows-native OpenClaw (kira invocation
+      // from WSL dashboard not wired yet — falls through and will error)
+      const isFinn = (action.agent || 'finn') === 'finn';
+      const runner = isFinn ? 'hermes' : 'openclaw';
+      const runArgs = isFinn ? ['cron', 'run', cronId] : ['cron', 'run', '--timeout', '300000', cronId];
+      const child = spawn(runner, runArgs, {
         detached: true,
         stdio: 'ignore',
         cwd: agentBasePath(action.agent || 'finn'),
@@ -1451,7 +1468,7 @@ app.get('/api/system-info', async (req, res) => {
       fs.readdir(SCRIPTS_PATH).catch(() => []),
       fs.readdir(SKILLS_PATH, { withFileTypes: true }).catch(() => []),
       getAllMemoryFilesRecursive({ excludeArchive: true }).catch(() => []),
-      readJsonFile(FINN_WORKSPACE_CRONS_PATH),
+      readJsonFile(FINN_LIVE_CRONS_PATH).then(v => v || readJsonFile(FINN_WORKSPACE_CRONS_PATH)),
       readJsonFile(path.join(MEMORY_PATH, 'cron-health-alerts.json')),
       readMdFile(path.join(MEMORY_PATH, 'system', 'token-status.md')),
       readMdFile(path.join(MEMORY_PATH, 'checkpoint.md')),
@@ -1499,7 +1516,7 @@ app.get('/api/system-info', async (req, res) => {
           name: 'Finn',
           emoji: '\u{1F98A}',
           status: 'online',
-          model: tokenStatus?.model || 'Kimi K2.5',
+          model: tokenStatus?.model || 'GPT-5.5',
           platform: 'Windows PC (RexIII)',
           features: ['chat', 'memory', 'crons', 'skills', 'health', 'location'],
           stats: { memoryFiles: memoryFiles.length, scripts: scriptCount, skills: skillCount, crons: cronCount },
@@ -1517,7 +1534,7 @@ app.get('/api/system-info', async (req, res) => {
       ],
       infrastructure: {
         apiServer: { status: 'online', port: PORT, base: AGENTS_BASE_PATH },
-        tailscale: { funnel: 'https://lumes-virtual-machine.tailf846b2.ts.net/dashboard-api' },
+        tailscale: { funnel: 'https://rexiii.tailf846b2.ts.net/dashboard-api' },
         deployment: { platform: 'Vercel', url: 'https://agent-dashboard-sand.vercel.app' },
         gateway: { cronsConfigured: cronCount },
       },
@@ -2736,7 +2753,7 @@ app.get('/api/agents/:agentId/stats', async (req, res) => {
     const [allFiles, skillEntries, rawCrons] = await Promise.all([
       getAllMemoryFilesRecursive({ excludeArchive: true }),
       fs.readdir(SKILLS_PATH, { withFileTypes: true }).catch(() => []),
-      readJsonFile(FINN_WORKSPACE_CRONS_PATH),
+      readJsonFile(FINN_LIVE_CRONS_PATH).then(v => v || readJsonFile(FINN_WORKSPACE_CRONS_PATH)),
     ]);
 
     const skillCount = (skillEntries as any[]).filter((e: any) => e.isDirectory?.()).length;
@@ -3068,6 +3085,12 @@ app.post('/api/reports', async (req, res) => {
 
 // ─── Monitoring routes (costs, health, SSE, heatmap, services) ───
 app.use(monitoringRouter);
+
+// SPA fallback: any non-/api GET serves index.html so React Router can handle the route.
+// Must come AFTER all /api/* routes so they aren't shadowed.
+app.get(/^(?!\/api\/).*/, (req, res) => {
+  res.sendFile(path.join(DIST_PATH, 'index.html'));
+});
 
 app.listen(PORT, () => {
   console.log(`Agent Dashboard API running on http://localhost:${PORT}`);

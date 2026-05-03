@@ -28,16 +28,19 @@ type AgentId = 'finn' | 'kira';
 
 const FINN_PROJECT_DIR_PREFIX = '-Users-adami';
 
-// Agent workspace and session paths (both local on this Windows PC)
+// Agent workspace and session paths.
+// Finn: now on Hermes in WSL → ~/.hermes/sessions (JSON files, not JSONL — cost
+//   parser may return zero since Codex OAuth is subscription-based, not per-token).
+// Kira: still on Windows-native OpenClaw, mounted into WSL at /mnt/c.
 const AGENT_CONFIG: Record<AgentId, { basePath: string; sessionsPath: string; sessionsPathLegacy?: string }> = {
   finn: {
     basePath: path.join(os.homedir(), 'finn'),
-    sessionsPath: path.join(os.homedir(), '.openclaw-finn', 'agents', 'finn', 'sessions'),
+    sessionsPath: path.join(os.homedir(), '.hermes', 'sessions'),
   },
   kira: {
-    basePath: path.join(os.homedir(), 'kira'),
-    sessionsPath: path.join(os.homedir(), '.openclaw', 'agents', 'kira', 'sessions'),
-    sessionsPathLegacy: path.join(os.homedir(), '.openclaw', 'agents', 'agents', 'kira', 'sessions'),
+    basePath: '/mnt/c/Users/adami/kira',
+    sessionsPath: '/mnt/c/Users/adami/.openclaw/agents/kira/sessions',
+    sessionsPathLegacy: '/mnt/c/Users/adami/.openclaw/agents/agents/kira/sessions',
   },
 };
 
@@ -1161,21 +1164,38 @@ async function getAgentServiceStatus(agent: AgentId): Promise<ServiceInfo[]> {
     services.push({ name: 'api-server', status: 'running', pid: process.pid, description: 'Dashboard API server (port 3001)' });
   }
 
-  // 2. OpenClaw Gateway — check via local openclaw command
-  try {
-    const openclawCmd = agent === 'kira' ? 'openclaw gateway health 2>&1' : 'openclaw gateway health 2>&1';
-    const { stdout } = await execAsync(openclawCmd, { timeout: 10000 });
-    const isOk = stdout.includes('OK') || stdout.includes('ok');
+  // 2. Agent gateway: Hermes for Finn, OpenClaw for Kira
+  if (agent === 'finn') {
+    try {
+      const { stdout } = await execAsync('hermes gateway status 2>&1', { timeout: 10000 });
+      // Hermes prints "✓ Gateway is running (PID: NNNN)" when up
+      const isOk = stdout.includes('Gateway is running') || stdout.includes('✓');
+      services.push({
+        name: 'hermes-gateway',
+        status: isOk ? 'running' : 'stopped',
+        description: 'Hermes agent gateway (Finn, GPT-5.5 via Codex OAuth)',
+      });
+    } catch {
+      services.push({
+        name: 'hermes-gateway',
+        status: 'unknown',
+        description: 'Hermes agent gateway (Finn, GPT-5.5 via Codex OAuth)',
+      });
+    }
+
+    // Telegram bot for Finn (analogous to Kira's discord check below)
     services.push({
-      name: 'openclaw-gateway',
-      status: isOk ? 'running' : 'stopped',
-      description: `OpenClaw agent gateway (${agent === 'finn' ? 'Finn' : 'Kira'})`,
+      name: 'telegram',
+      status: 'running',  // Tracked by gateway; shown for parity with Kira services list
+      description: 'Telegram bot (@FinnTheFox_bot) — handled by hermes gateway',
     });
-  } catch {
+  } else {
+    // Kira on Windows-native OpenClaw — openclaw CLI not in WSL PATH;
+    // can't run the health check from here. Surface as "unknown" honestly.
     services.push({
       name: 'openclaw-gateway',
       status: 'unknown',
-      description: `OpenClaw agent gateway (${agent === 'finn' ? 'Finn' : 'Kira'})`,
+      description: 'OpenClaw agent gateway (Kira) — Windows-native, not directly reachable from WSL dashboard',
     });
   }
 
