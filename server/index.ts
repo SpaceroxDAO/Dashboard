@@ -3687,6 +3687,38 @@ app.get('/api/agents/:agentId/ynab', async (req, res) => {
   }
 });
 
+// ─── Persona mode (user-conversation context switching) ───
+// Writes to ~/.hermes/persona_mode.json — Finn reads this at the start of user
+// conversations to adopt the requested mode. Cron jobs are unaffected because
+// they run with their own system prompt and don't consult this file.
+
+const PERSONA_MODE_PATH = path.join(os.homedir(), '.hermes', 'persona_mode.json');
+
+app.get('/api/agents/:agentId/persona', async (req, res) => {
+  const { agentId } = req.params;
+  if (agentId !== 'finn') return res.json({ active: null });
+  try {
+    const raw = await fs.readFile(PERSONA_MODE_PATH, 'utf-8');
+    res.json(JSON.parse(raw));
+  } catch {
+    res.json({ active: null });
+  }
+});
+
+app.post('/api/agents/:agentId/persona', async (req, res) => {
+  const { agentId } = req.params;
+  if (agentId !== 'finn') return res.status(403).json({ error: 'Persona only available for finn' });
+  const { id, name, tagline, prompt } = req.body as { id: string; name: string; tagline: string; prompt: string };
+  if (!id) return res.status(400).json({ error: 'id required' });
+
+  const data = id === 'general'
+    ? { active: null, activatedAt: new Date().toISOString(), scope: 'user-conversations-only' }
+    : { active: id, name, tagline, prompt, activatedAt: new Date().toISOString(), scope: 'user-conversations-only' };
+
+  await fs.writeFile(PERSONA_MODE_PATH, JSON.stringify(data, null, 2), 'utf-8');
+  res.json(data);
+});
+
 // ─── Hermes Kanban (native agent task board via kanban.db) ───
 
 const KANBAN_QUERY_SCRIPT = path.join(os.homedir(), 'finn', 'agent-dashboard', 'server', 'kanban_query.py');

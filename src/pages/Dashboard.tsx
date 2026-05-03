@@ -75,6 +75,7 @@ export function DashboardPage() {
         </div>
 
         <LiveFeed />
+        <PersonasPanel />
         <StatsGrid />
 
         {!isKira && (
