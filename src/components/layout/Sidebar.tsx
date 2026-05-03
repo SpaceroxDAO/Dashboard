@@ -20,6 +20,8 @@ import {
   FolderKanban,
   FileText,
   User,
+  ScrollText,
+  FolderEdit,
 } from 'lucide-react';
 import { sidebarCollapsedAtom, activeAgentAtom, agentsAtom, activeAgentIdAtom, connectionStatusAtom, activeMissionsAtom } from '@/store/atoms';
 import { X } from 'lucide-react';
@@ -41,6 +43,8 @@ const navItems = [
   { path: '/dna', icon: Dna, label: 'DNA' },
   { path: '/memory', icon: FolderOpen, label: 'Memory' },
   { path: '/schedule', icon: Calendar, label: 'Schedule' },
+  { path: '/logs', icon: ScrollText, label: 'Logs' },
+  { path: '/files', icon: FolderEdit, label: 'Files' },
 ];
 
 const bottomItems = [

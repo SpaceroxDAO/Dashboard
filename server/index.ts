@@ -3254,6 +3254,332 @@ app.get('/api/agents/:agentId/build-log', async (req, res) => {
   }
 });
 
+// ─── Hermes CLI endpoints (curator, insights, doctor, logs, files) ───
+
+const stripAnsi = (s: string) =>
+  s.replace(/\x1b\[[0-9;]*[mGKHF]/g, '').replace(/[─-╿│╭-╯║-╩╔╗╚╝]/g, '');
+
+// 5-minute cache for slow hermes commands (insights, doctor)
+const hermesInsightsCache = new Map<string, { data: unknown; ts: number }>();
+const hermesDoctorCache = new Map<string, { data: unknown; ts: number }>();
+const HERMES_CACHE_TTL = 5 * 60_000;
+
+// GET /api/agents/:agentId/curator
+app.get('/api/agents/:agentId/curator', async (req, res) => {
+  const { agentId } = req.params;
+  if (agentId !== 'finn') {
+    return res.status(404).json({ error: 'curator not available' });
+  }
+  try {
+    const { stdout } = await execAsync('hermes curator status', { timeout: 30000 });
+    const text = stripAnsi(stdout);
+
+    const getBool  = (key: string) => new RegExp(`${key}:\\s*(ENABLED|DISABLED)`, 'i').exec(text)?.[1]?.toUpperCase() === 'ENABLED';
+    const getStr   = (key: string) => new RegExp(`${key}:\\s*(.+)`).exec(text)?.[1]?.trim() ?? null;
+    const getInt   = (key: string) => { const m = new RegExp(`${key}\\s+(\\d+)`).exec(text); return m ? parseInt(m[1], 10) : 0; };
+
+    // Skills block
+    const totalM    = /agent-created skills:\s*(\d+)/.exec(text);
+    const activeM   = /active\s+(\d+)/.exec(text);
+    const staleM    = /stale\s+(\d+)/.exec(text);
+    const archivedM = /archived\s+(\d+)/.exec(text);
+
+    // Parse skill rows from sections
+    const parseSkillRows = (sectionLabel: string) => {
+      const sectionRe = new RegExp(`${sectionLabel}[\\s\\S]*?(?=\\n\\S|$)`);
+      const section = sectionRe.exec(text)?.[0] ?? '';
+      const rowRe = /^\s+(\S+)\s+activity=\s*(\d+)\s+use=\s*(\d+)\s+view=\s*(\d+)\s+patches=\s*(\d+)\s+last_activity=(\S+)/gm;
+      const rows: Array<{ name: string; activity: number; use: number; view: number; patches: number; lastActivity: string }> = [];
+      let m: RegExpExecArray | null;
+      while ((m = rowRe.exec(section)) !== null) {
+        rows.push({ name: m[1], activity: parseInt(m[2], 10), use: parseInt(m[3], 10), view: parseInt(m[4], 10), patches: parseInt(m[5], 10), lastActivity: m[6] });
+      }
+      return rows;
+    };
+
+    res.json({
+      enabled:      getBool('curator'),
+      runs:         getInt('runs:'),
+      lastRun:      getStr('last run:'),
+      lastSummary:  getStr('last summary:'),
+      interval:     getStr('interval:'),
+      staleAfter:   getStr('stale after:'),
+      archiveAfter: getStr('archive after:'),
+      skills: {
+        total:    totalM    ? parseInt(totalM[1], 10) : 0,
+        active:   activeM   ? parseInt(activeM[1], 10) : 0,
+        stale:    staleM    ? parseInt(staleM[1], 10) : 0,
+        archived: archivedM ? parseInt(archivedM[1], 10) : 0,
+      },
+      leastActive: parseSkillRows('least recently active'),
+      mostActive:  parseSkillRows('most active'),
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message ?? 'Failed to run hermes curator status' });
+  }
+});
+
+// GET /api/agents/:agentId/insights?days=30
+app.get('/api/agents/:agentId/insights', async (req, res) => {
+  const { agentId } = req.params;
+  if (agentId !== 'finn') {
+    return res.status(404).json({ error: 'insights not available' });
+  }
+  const days = Math.min(Math.max(parseInt(String(req.query.days ?? '30'), 10) || 30, 1), 365);
+  const cacheKey = `${agentId}-${days}`;
+  const cached = hermesInsightsCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < HERMES_CACHE_TTL) {
+    return res.json(cached.data);
+  }
+  try {
+    const { stdout } = await execAsync(`hermes insights --days ${days}`, { timeout: 30000 });
+    const text = stripAnsi(stdout).replace(/[^\x20-\x7E\n]/g, '');
+
+    const noComma = (s: string) => s.replace(/,/g, '');
+    const num     = (s: string) => parseInt(noComma(s), 10);
+    const flt     = (s: string) => parseFloat(noComma(s));
+
+    // Period
+    const period = /Period:\s*(.+)/.exec(text)?.[1]?.trim() ?? '';
+
+    // Overview block — grab all key:value pairs from the stats table area
+    const ov = {
+      sessions:          num(/Sessions:\s*([\d,]+)/.exec(text)?.[1] ?? '0'),
+      messages:          num(/Messages:\s*([\d,]+)/.exec(text)?.[1] ?? '0'),
+      toolCalls:         num(/Tool calls:\s*([\d,]+)/.exec(text)?.[1] ?? '0'),
+      userMessages:      num(/User messages:\s*([\d,]+)/.exec(text)?.[1] ?? '0'),
+      inputTokens:       num(/Input tokens:\s*([\d,]+)/.exec(text)?.[1] ?? '0'),
+      outputTokens:      num(/Output tokens:\s*([\d,]+)/.exec(text)?.[1] ?? '0'),
+      totalTokens:       num(/Total tokens:\s*([\d,]+)/.exec(text)?.[1] ?? '0'),
+      activeTime:        /Active time:\s*(\S+)/.exec(text)?.[1] ?? '',
+      avgSession:        /Avg session:\s*(\S+)/.exec(text)?.[1] ?? '',
+      avgMsgsPerSession: flt(/Avg msgs\/session:\s*([\d.]+)/.exec(text)?.[1] ?? '0'),
+    };
+
+    // Models Used section
+    const modelsSection = /Models Used\s*\n([\s\S]*?)(?=\n[A-Z][a-z]|\n\n[A-Z]|$)/.exec(text)?.[1] ?? '';
+    const models: Array<{ name: string; sessions: number; tokens: number }> = [];
+    const modelRowRe = /^(\S+)\s+([\d,]+)\s+([\d,]+)/gm;
+    let mr: RegExpExecArray | null;
+    while ((mr = modelRowRe.exec(modelsSection)) !== null) {
+      models.push({ name: mr[1], sessions: num(mr[2]), tokens: num(mr[3]) });
+    }
+
+    // Platforms section
+    const platSection = /Platforms\s*\n([\s\S]*?)(?=\n[A-Z][a-z]|\n\n[A-Z]|$)/.exec(text)?.[1] ?? '';
+    const platforms: Array<{ name: string; sessions: number; messages: number; tokens: number }> = [];
+    const platRowRe = /^(\S+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)/gm;
+    let pr: RegExpExecArray | null;
+    while ((pr = platRowRe.exec(platSection)) !== null) {
+      platforms.push({ name: pr[1], sessions: num(pr[2]), messages: num(pr[3]), tokens: num(pr[4]) });
+    }
+
+    // Top Tools section
+    const toolsSection = /Top Tools\s*\n([\s\S]*?)(?=\nActivity Patterns|$)/.exec(text)?.[1] ?? '';
+    const topTools: Array<{ name: string; calls: number; errors: number; lastUsed: string }> = [];
+    const toolRowRe = /^(\S+)\s+([\d,]+)\s+([\d,]+)\s+(\S+)/gm;
+    let tr: RegExpExecArray | null;
+    while ((tr = toolRowRe.exec(toolsSection)) !== null) {
+      topTools.push({ name: tr[1], calls: num(tr[2]), errors: num(tr[3]), lastUsed: tr[4] });
+    }
+
+    // Activity Patterns section
+    const actSection = /Activity Patterns\s*\n([\s\S]*?)(?=\nNotable Sessions|Peak hours:|$)/.exec(text)?.[1] ?? '';
+    const activityByDay: Record<string, number> = {};
+    const dayRe = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+([\d,]+)/gm;
+    let dr: RegExpExecArray | null;
+    while ((dr = dayRe.exec(actSection)) !== null) {
+      activityByDay[dr[1]] = num(dr[2]);
+    }
+
+    const peakHoursRaw = /Peak hours?:\s*(.+)/.exec(text)?.[1]?.trim() ?? '';
+    const peakHours = peakHoursRaw ? peakHoursRaw.split(/,\s*/) : [];
+    const activeDays = num(/Active days:\s*([\d,]+)/.exec(text)?.[1] ?? '0');
+    const bestStreak = num(/Best streak:\s*([\d,]+)/.exec(text)?.[1] ?? '0');
+
+    // Notable Sessions section
+    const longestM     = /Longest session\s+([\d]+h\s*[\d]+m|[\d]+m)\s+\(([^,]+),\s*(\S+)\)/.exec(text);
+    const mostMsgsM    = /Most messages\s+([\d,]+)\s*msgs?\s+\(([^,]+),\s*(\S+)\)/.exec(text);
+    const mostToksM    = /Most tokens\s+([\d,]+)\s*tokens?\s+\(([^,]+),\s*(\S+)\)/.exec(text);
+    const mostToolsM   = /Most tool calls\s+([\d,]+)\s*calls?\s+\(([^,]+),\s*(\S+)\)/.exec(text);
+
+    const notableSessions = {
+      longest:       longestM   ? { duration: longestM[1].trim(), date: longestM[2].trim(),   id: longestM[3].trim()   } : null,
+      mostMessages:  mostMsgsM  ? { count: num(mostMsgsM[1]),     date: mostMsgsM[2].trim(),  id: mostMsgsM[3].trim()  } : null,
+      mostTokens:    mostToksM  ? { count: num(mostToksM[1]),     date: mostToksM[2].trim(),  id: mostToksM[3].trim()  } : null,
+      mostToolCalls: mostToolsM ? { count: num(mostToolsM[1]),    date: mostToolsM[2].trim(), id: mostToolsM[3].trim() } : null,
+    };
+
+    const data = { period, overview: ov, models, platforms, topTools, activityByDay, peakHours, activeDays, bestStreak, notableSessions };
+    hermesInsightsCache.set(cacheKey, { data, ts: Date.now() });
+    res.json(data);
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message ?? 'Failed to run hermes insights' });
+  }
+});
+
+// GET /api/agents/:agentId/doctor
+app.get('/api/agents/:agentId/doctor', async (req, res) => {
+  const { agentId } = req.params;
+  if (agentId !== 'finn') {
+    return res.status(404).json({ error: 'doctor not available' });
+  }
+  const cacheKey = agentId;
+  const cached = hermesDoctorCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < HERMES_CACHE_TTL) {
+    return res.json(cached.data);
+  }
+  try {
+    const { stdout } = await execAsync('hermes doctor', { timeout: 30000 });
+    const text = stripAnsi(stdout);
+
+    type CheckItem = { status: 'pass' | 'warn' | 'fail'; label: string };
+    type Category  = { name: string; items: CheckItem[] };
+
+    const categories: Category[] = [];
+    let currentCat: Category | null = null;
+
+    for (const rawLine of text.split('\n')) {
+      const line = rawLine.trim();
+      // Category header: lines starting with the ◆ bullet that hermes doctor uses
+      if (/^◆/.test(line)) {
+        currentCat = { name: line.replace(/^◆\s*/, '').trim(), items: [] };
+        categories.push(currentCat);
+        continue;
+      }
+      if (!currentCat) continue;
+      if (/^✓/.test(line)) {
+        currentCat.items.push({ status: 'pass', label: line.replace(/^✓\s*/, '').trim() });
+      } else if (/^⚠/.test(line)) {
+        currentCat.items.push({ status: 'warn', label: line.replace(/^⚠\s*/, '').trim() });
+      } else if (/^✗/.test(line)) {
+        currentCat.items.push({ status: 'fail', label: line.replace(/^✗\s*/, '').trim() });
+      }
+    }
+
+    const allItems = categories.flatMap(c => c.items);
+    const summary = {
+      pass: allItems.filter(i => i.status === 'pass').length,
+      warn: allItems.filter(i => i.status === 'warn').length,
+      fail: allItems.filter(i => i.status === 'fail').length,
+    };
+
+    const data = { categories, summary };
+    hermesDoctorCache.set(cacheKey, { data, ts: Date.now() });
+    res.json(data);
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message ?? 'Failed to run hermes doctor' });
+  }
+});
+
+// GET /api/agents/:agentId/logs?log=agent&lines=100&level=INFO&since=1h&component=gateway
+app.get('/api/agents/:agentId/logs', async (req, res) => {
+  const { agentId } = req.params;
+  if (agentId !== 'finn') {
+    return res.status(404).json({ error: 'logs not available' });
+  }
+  const VALID_LOGS = new Set(['agent', 'errors', 'gateway']);
+  const logName   = VALID_LOGS.has(String(req.query.log ?? '')) ? String(req.query.log) : 'agent';
+  const lines     = Math.min(Math.max(parseInt(String(req.query.lines ?? '100'), 10) || 100, 1), 500);
+  const level     = req.query.level     ? String(req.query.level)     : null;
+  const since     = req.query.since     ? String(req.query.since)     : null;
+  const component = req.query.component ? String(req.query.component) : null;
+
+  // Validate level/since/component values to prevent injection (allow word chars, digits, /, .)
+  const safe = (v: string | null) => v && /^[\w./-]+$/.test(v) ? v : null;
+
+  let cmd = `hermes logs ${logName} -n ${lines}`;
+  if (safe(level))     cmd += ` --level ${level}`;
+  if (safe(since))     cmd += ` --since ${since}`;
+  if (safe(component)) cmd += ` --component ${component}`;
+
+  try {
+    const { stdout } = await execAsync(cmd, { timeout: 30000 });
+    const cleaned = stripAnsi(stdout);
+    const logLines = cleaned.split('\n').filter(l => l.trim().length > 0);
+    res.json({ log: logName, lines: logLines, count: logLines.length });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message ?? 'Failed to run hermes logs' });
+  }
+});
+
+// Shared security helper: resolve a user-supplied path relative to ~/.hermes and
+// ensure it stays within that directory (no path traversal).
+const HERMES_BASE = path.join(os.homedir(), '.hermes');
+function resolveHermesPath(userPath: string): string | null {
+  // Normalise: strip leading slash so it's always relative
+  const rel = String(userPath ?? '').replace(/^\/+/, '') || '.';
+  const resolved = path.resolve(HERMES_BASE, rel);
+  return resolved.startsWith(HERMES_BASE) ? resolved : null;
+}
+
+// GET /api/agents/:agentId/files?path=/
+app.get('/api/agents/:agentId/files', async (req, res) => {
+  const { agentId } = req.params;
+  const safePath = resolveHermesPath(String(req.query.path ?? '/'));
+  if (!safePath) {
+    return res.status(400).json({ error: 'Invalid path' });
+  }
+  try {
+    const entries = await fs.readdir(safePath, { withFileTypes: true });
+    const result = await Promise.all(
+      entries.map(async (entry) => {
+        const fullPath = path.join(safePath, entry.name);
+        const stat = await fs.stat(fullPath).catch(() => null);
+        return {
+          name:     entry.name,
+          type:     entry.isDirectory() ? 'dir' : 'file',
+          size:     stat?.size ?? 0,
+          modified: stat?.mtime?.toISOString() ?? null,
+        };
+      })
+    );
+    const relDisplay = '/' + path.relative(HERMES_BASE, safePath).replace(/\\/g, '/');
+    res.json({ path: relDisplay === '/.' ? '/' : relDisplay, entries: result });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message ?? 'Failed to list directory' });
+  }
+});
+
+// GET /api/agents/:agentId/files/content?path=config.yaml
+app.get('/api/agents/:agentId/files/content', async (req, res) => {
+  const { agentId } = req.params;
+  const safePath = resolveHermesPath(String(req.query.path ?? ''));
+  if (!safePath) {
+    return res.status(400).json({ error: 'Invalid path' });
+  }
+  try {
+    const [content, stat] = await Promise.all([
+      fs.readFile(safePath, 'utf-8'),
+      fs.stat(safePath),
+    ]);
+    const relDisplay = path.relative(HERMES_BASE, safePath).replace(/\\/g, '/');
+    res.json({ path: relDisplay, content, size: stat.size });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message ?? 'Failed to read file' });
+  }
+});
+
+// PUT /api/agents/:agentId/files/content?path=config.yaml
+app.put('/api/agents/:agentId/files/content', async (req, res) => {
+  const { agentId } = req.params;
+  const safePath = resolveHermesPath(String(req.query.path ?? ''));
+  if (!safePath) {
+    return res.status(400).json({ error: 'Invalid path' });
+  }
+  const { content } = req.body as { content?: string };
+  if (typeof content !== 'string') {
+    return res.status(400).json({ error: 'content must be a string' });
+  }
+  try {
+    await fs.mkdir(path.dirname(safePath), { recursive: true });
+    await fs.writeFile(safePath, content, 'utf-8');
+    res.json({ ok: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message ?? 'Failed to write file' });
+  }
+});
+
 // ─── Reflections (evening reflections, daily logs) ───
 
 app.get('/api/agents/:agentId/reflections', async (req, res) => {

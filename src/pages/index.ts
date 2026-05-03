@@ -12,3 +12,5 @@ export { DNAPage } from './DNA';
 export { ProjectsPage } from './Projects';
 export { ReportsPage } from './Reports';
 export { PersonalPage } from './Personal';
+export { LogsPage } from './Logs';
+export { FilesPage } from './Files';

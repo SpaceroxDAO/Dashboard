@@ -16,3 +16,6 @@ export { FinanceWidget } from './FinanceWidget';
 export { FinanceWidgetV2 } from './FinanceWidgetV2';
 export { HealthWidgetV2 } from './HealthWidgetV2';
 export { NightlyBuildCard } from './NightlyBuildCard';
+export { CuratorStatusCard } from './CuratorStatusCard';
+export { InsightsPanel } from './InsightsPanel';
+export { DoctorPanel } from './DoctorPanel';

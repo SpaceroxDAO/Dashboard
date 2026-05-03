@@ -9,6 +9,9 @@ import {
   SystemMonitoringPanel,
   KiraReflectionsPanel,
   NightlyBuildCard,
+  CuratorStatusCard,
+  InsightsPanel,
+  DoctorPanel,
 } from '@/components/dashboard';
 import {
   CostBreakdown,
@@ -73,7 +76,16 @@ export function DashboardPage() {
         <LiveFeed />
         <StatsGrid />
 
-        {!isKira && <NightlyBuildCard />}
+        {!isKira && (
+          <>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <NightlyBuildCard />
+              <CuratorStatusCard />
+            </div>
+            <InsightsPanel />
+            <DoctorPanel />
+          </>
+        )}
 
         {isKira && (
           <>
