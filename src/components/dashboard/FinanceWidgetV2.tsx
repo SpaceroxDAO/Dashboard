@@ -1,325 +1,215 @@
+import { useState, useEffect } from 'react';
 import { useAtom } from 'jotai';
-import { 
-  DollarSign, Receipt, Calendar, Cpu, TrendingUp, TrendingDown, 
-  CreditCard, AlertTriangle, PieChart, Clock
+import {
+  DollarSign, CreditCard,
+  Landmark, PiggyBank, BarChart2, Loader2, RefreshCw
 } from 'lucide-react';
-import { billsAtom, financeSummaryAtom, financeExtendedAtom } from '@/store/atoms';
+import { activeAgentAtom } from '@/store/atoms';
+import { API_BASE } from '@/services/api';
 
 function fmt(n: number): string {
-  return n >= 1000 ? `$${(n / 1000).toFixed(1)}k` : `$${n.toFixed(0)}`;
+  const abs = Math.abs(n);
+  const str = abs >= 1000
+    ? `$${(abs / 1000).toFixed(1)}k`
+    : `$${abs.toFixed(0)}`;
+  return n < 0 ? `-${str}` : str;
 }
 
 function fmtFull(n: number): string {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(n);
 }
 
-function daysUntil(dateStr: string): number {
-  const due = new Date(dateStr);
-  const now = new Date();
-  return Math.ceil((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-}
+const ACCOUNT_ICON: Record<string, typeof DollarSign> = {
+  savings: PiggyBank,
+  checking: Landmark,
+  creditCard: CreditCard,
+  otherAsset: BarChart2,
+};
 
-// Donut chart component for subscription breakdown
-function SubscriptionDonut({ categories }: { categories: Record<string, number> }) {
-  const total = Object.values(categories).reduce((a, b) => a + b, 0);
-  if (total === 0) return null;
-  
-  const colors: Record<string, string> = {
-    ai_tools: '#8B5CF6',    // purple
-    food: '#F59E0B',        // amber
-    phone: '#3B82F6',       // blue
-    streaming: '#EC4899',   // pink
-    cloud: '#10B981',       // emerald
-    finance: '#6366F1',     // indigo
-    other: '#6B7280',       // gray
-  };
-  
-  let cumulative = 0;
-  const segments = Object.entries(categories).map(([cat, amount]) => {
-    const pct = (amount / total) * 100;
-    const start = cumulative;
-    cumulative += pct;
-    return { cat, amount, pct, start, color: colors[cat] || colors.other };
-  });
-
-  // Create conic gradient
-  const gradient = segments
-    .map(s => `${s.color} ${s.start}% ${s.start + s.pct}%`)
-    .join(', ');
-
-  return (
-    <div className="flex items-center gap-3">
-      <div 
-        className="w-16 h-16 rounded-full relative"
-        style={{ background: `conic-gradient(${gradient})` }}
-      >
-        <div className="absolute inset-2 bg-surface-elevated rounded-full flex items-center justify-center">
-          <span className="text-[10px] font-bold text-text-bright">{fmt(total)}</span>
-        </div>
-      </div>
-      <div className="flex-1 space-y-0.5">
-        {segments.slice(0, 4).map(s => (
-          <div key={s.cat} className="flex items-center gap-1.5 text-[10px]">
-            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: s.color }} />
-            <span className="text-text-muted capitalize">{s.cat.replace('_', ' ')}</span>
-            <span className="text-text-dim ml-auto">{s.pct.toFixed(0)}%</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// Credit card payoff widget
-function CreditCardWidget({ balance, minPayment, dueDate, creditScore }: {
-  balance: number;
-  minPayment: number;
-  dueDate: string;
-  creditScore: number;
-}) {
-  const days = daysUntil(dueDate);
-  const urgency = days <= 3 ? 'text-signal-danger' : days <= 7 ? 'text-signal-caution' : 'text-text-muted';
-  
-  return (
-    <div className="bg-surface-base/50 rounded-lg p-2">
-      <div className="flex items-center gap-1.5 mb-1.5">
-        <CreditCard className="w-3.5 h-3.5 text-signal-primary" />
-        <span className="text-[11px] font-medium text-text-bright">Credit Card</span>
-      </div>
-      <div className="grid grid-cols-3 gap-2">
-        <div>
-          <div className="text-[9px] text-text-dim">Balance</div>
-          <div className="text-xs font-semibold text-signal-danger telemetry-value">
-            {fmtFull(Math.abs(balance))}
-          </div>
-        </div>
-        <div>
-          <div className="text-[9px] text-text-dim">Min Due</div>
-          <div className="text-xs font-semibold text-text-bright telemetry-value">
-            {fmtFull(minPayment)}
-          </div>
-        </div>
-        <div>
-          <div className="text-[9px] text-text-dim">Due In</div>
-          <div className={`text-xs font-semibold telemetry-value ${urgency}`}>
-            {days}d
-          </div>
-        </div>
-      </div>
-      <div className="mt-1.5 flex items-center justify-between">
-        <span className="text-[9px] text-text-dim">FICO Score</span>
-        <span className="text-[11px] font-semibold text-signal-primary">{creditScore}</span>
-      </div>
-    </div>
-  );
-}
-
-// Net worth trend mini-chart
-function NetWorthTrend({ history }: { history: Array<{ date: string; netWorth: number }> }) {
-  if (history.length < 2) return null;
-  
-  const latest = history[history.length - 1];
-  const previous = history[history.length - 2];
-  const change = latest.netWorth - previous.netWorth;
-  const pctChange = ((change / previous.netWorth) * 100).toFixed(1);
-  const isUp = change >= 0;
-  
-  return (
-    <div className="flex items-center gap-2">
-      <div className="flex-1">
-        <div className="text-[9px] text-text-dim">Net Worth</div>
-        <div className="text-sm font-bold text-text-bright telemetry-value">
-          {fmtFull(latest.netWorth)}
-        </div>
-      </div>
-      <div className={`flex items-center gap-0.5 ${isUp ? 'text-signal-success' : 'text-signal-danger'}`}>
-        {isUp ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-        <span className="text-[10px] font-medium">{isUp ? '+' : ''}{pctChange}%</span>
-      </div>
-    </div>
-  );
-}
-
-// Spending alerts banner
-function AlertsBanner({ alerts }: { alerts: Array<{ id: string; severity: string; title: string; monthlyImpact: number }> }) {
-  const warnings = alerts.filter(a => a.severity === 'warning');
-  if (warnings.length === 0) return null;
-  
-  return (
-    <div className="bg-signal-caution/10 border border-signal-caution/20 rounded-lg p-2 mb-2">
-      <div className="flex items-center gap-1.5 mb-1">
-        <AlertTriangle className="w-3 h-3 text-signal-caution" />
-        <span className="text-[10px] font-semibold text-signal-caution uppercase tracking-wider">
-          {warnings.length} Alert{warnings.length > 1 ? 's' : ''}
-        </span>
-      </div>
-      {warnings.map(alert => (
-        <div key={alert.id} className="text-[11px] text-text-muted">
-          {alert.title} <span className="text-signal-caution">(-{fmt(alert.monthlyImpact)}/mo)</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// AI costs breakdown
-function AICostBreakdown({ byModel, weekTotal }: { byModel: Record<string, number>; weekTotal: number }) {
-  const models = Object.entries(byModel).sort((a, b) => b[1] - a[1]);
-  
-  return (
-    <div className="bg-surface-base/50 rounded-lg p-2">
-      <div className="flex items-center justify-between mb-1.5">
-        <div className="flex items-center gap-1.5">
-          <Cpu className="w-3.5 h-3.5 text-signal-primary" />
-          <span className="text-[11px] font-medium text-text-bright">AI Costs</span>
-        </div>
-        <span className="text-xs font-semibold text-signal-primary telemetry-value">${weekTotal.toFixed(2)}/wk</span>
-      </div>
-      <div className="space-y-0.5">
-        {models.slice(0, 3).map(([model, cost]) => (
-          <div key={model} className="flex items-center justify-between text-[10px]">
-            <span className="text-text-muted truncate max-w-[120px]">{model}</span>
-            <span className="text-text-dim">${cost.toFixed(2)}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+interface YnabData {
+  accounts: { id: string; name: string; balance: number; type: string }[];
+  netWorth: number;
+  totalAssets: number;
+  totalLiabilities: number;
+  transactions: { date: string; amount: number; payee: string; category: string; approved: boolean }[];
+  categorySpend: { name: string; spent: number; budgeted: number; group: string }[];
+  unapproved: number;
+  asOf: string;
 }
 
 export function FinanceWidgetV2() {
-  const [bills] = useAtom(billsAtom);
-  const [summary] = useAtom(financeSummaryAtom);
-  const [extended] = useAtom(financeExtendedAtom);
+  const [activeAgent] = useAtom(activeAgentAtom);
+  const agentId = activeAgent?.id || 'finn';
+  const [data, setData] = useState<YnabData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const hasSummary = summary && (summary.weeklySpend > 0 || summary.subscriptionsBurn > 0);
-  const hasExtended = extended && (extended.netWorthHistory?.length > 0 || extended.alerts?.length > 0);
+  const load = async (bustCache = false) => {
+    try {
+      const url = `${API_BASE}/api/agents/${agentId}/ynab${bustCache ? `?t=${Date.now()}` : ''}`;
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      setData(d);
+      setError(null);
+    } catch (e: any) {
+      setError(e?.message ?? 'Failed to load');
+    }
+  };
 
-  if (!hasSummary && !hasExtended) {
+  useEffect(() => {
+    setLoading(true);
+    load().finally(() => setLoading(false));
+  }, [agentId]);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await load(true);
+    setRefreshing(false);
+  };
+
+  if (loading) {
     return (
-      <div className="bg-surface-elevated rounded-xl p-3 panel-glow">
-        <h2 className="text-sm font-semibold text-text-bright mb-2 flex items-center gap-1.5">
-          <DollarSign className="w-4 h-4 text-signal-primary" />
-          Finance
-        </h2>
-        <div className="text-center py-3">
-          <p className="text-xs text-text-dim">No financial data yet</p>
-        </div>
+      <div className="bg-surface-elevated rounded-xl p-3 panel-glow flex items-center justify-center py-8">
+        <Loader2 className="w-5 h-5 animate-spin text-text-dim" />
       </div>
     );
   }
 
-  const upcomingBills = bills?.filter(b => {
-    if (b.dueDate === 'Unknown' || b.dueDate === 'Recurring') return false;
-    const days = daysUntil(b.dueDate);
-    return days >= 0 && days <= 7;
-  }).slice(0, 3) || [];
+  if (error || !data) {
+    return (
+      <div className="bg-surface-elevated rounded-xl p-3 panel-glow">
+        <h2 className="text-sm font-semibold text-text-bright mb-2 flex items-center gap-1.5">
+          <DollarSign className="w-4 h-4 text-signal-primary" /> Finance
+        </h2>
+        <p className="text-xs text-signal-alert text-center py-3">{error || 'No data'}</p>
+      </div>
+    );
+  }
+
+  const assets = data.accounts.filter(a => a.balance >= 0);
+  const liabilities = data.accounts.filter(a => a.balance < 0);
+  const asOfDate = new Date(data.asOf).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
   return (
     <div className="bg-surface-elevated rounded-xl p-3 panel-glow">
-      <h2 className="text-sm font-semibold text-text-bright mb-2 flex items-center gap-1.5">
-        <DollarSign className="w-4 h-4 text-signal-primary" />
-        Finance
-        {summary?.generated && (
-          <span className="ml-auto text-[10px] text-text-dim telemetry-value">
-            {new Date(summary.generated).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-          </span>
-        )}
-      </h2>
-
-      {/* Alerts Banner */}
-      {extended?.alerts && <AlertsBanner alerts={extended.alerts} />}
-
-      {/* Net Worth Trend */}
-      {extended?.netWorthHistory && extended.netWorthHistory.length > 0 && (
-        <div className="mb-2 p-2 bg-surface-base/50 rounded-lg">
-          <NetWorthTrend history={extended.netWorthHistory} />
+      {/* Header */}
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-semibold text-text-bright flex items-center gap-1.5">
+          <DollarSign className="w-4 h-4 text-signal-primary" />
+          Finance
+        </h2>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-text-dim">YNAB · {asOfDate}</span>
+          <button onClick={handleRefresh} disabled={refreshing} className="text-text-dim hover:text-text-bright transition-colors">
+            <RefreshCw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
+          </button>
         </div>
-      )}
-
-      {/* Summary metrics row */}
-      {hasSummary && (
-        <div className="grid grid-cols-4 gap-1.5 mb-2">
-          <div className="bg-surface-base/50 rounded px-1.5 py-1 text-center">
-            <div className="text-[10px] text-text-dim flex items-center justify-center gap-0.5">
-              <TrendingUp className="w-2.5 h-2.5" />
-              <span>Week</span>
-            </div>
-            <div className="text-xs font-semibold text-text-bright telemetry-value">{fmt(summary.weeklySpend)}</div>
-          </div>
-          <div className="bg-surface-base/50 rounded px-1.5 py-1 text-center">
-            <div className="text-[10px] text-text-dim flex items-center justify-center gap-0.5">
-              <Calendar className="w-2.5 h-2.5" />
-              <span>Mo.</span>
-            </div>
-            <div className="text-xs font-semibold text-text-bright telemetry-value">{fmt(summary.monthlyProjection)}</div>
-          </div>
-          <div className="bg-surface-base/50 rounded px-1.5 py-1 text-center">
-            <div className="text-[10px] text-text-dim flex items-center justify-center gap-0.5">
-              <Receipt className="w-2.5 h-2.5" />
-              <span>Subs</span>
-            </div>
-            <div className="text-xs font-semibold text-signal-caution telemetry-value">{fmt(summary.subscriptionsBurn)}</div>
-          </div>
-          <div className="bg-surface-base/50 rounded px-1.5 py-1 text-center">
-            <div className="text-[10px] text-text-dim flex items-center justify-center gap-0.5">
-              <Cpu className="w-2.5 h-2.5" />
-              <span>AI</span>
-            </div>
-            <div className="text-xs font-semibold text-signal-primary telemetry-value">${summary.aiCostsWeek.toFixed(0)}</div>
-          </div>
-        </div>
-      )}
-
-      {/* Two-column layout for credit card and subscriptions */}
-      <div className="grid grid-cols-2 gap-2 mb-2">
-        {/* Credit Card Widget */}
-        {extended?.creditCard && (
-          <CreditCardWidget 
-            balance={extended.creditCard.balance}
-            minPayment={extended.creditCard.minPayment}
-            dueDate={extended.creditCard.dueDate}
-            creditScore={extended.creditCard.creditScore}
-          />
-        )}
-
-        {/* Subscription Donut */}
-        {extended?.subscriptionsByCategory && (
-          <div className="bg-surface-base/50 rounded-lg p-2">
-            <div className="flex items-center gap-1.5 mb-1.5">
-              <PieChart className="w-3.5 h-3.5 text-signal-primary" />
-              <span className="text-[11px] font-medium text-text-bright">Subscriptions</span>
-            </div>
-            <SubscriptionDonut categories={extended.subscriptionsByCategory} />
-          </div>
-        )}
       </div>
 
-      {/* AI Cost Breakdown */}
-      {extended?.aiCosts && (
-        <div className="mb-2">
-          <AICostBreakdown byModel={extended.aiCosts.byModel} weekTotal={extended.aiCosts.weekTotal} />
+      {/* Net worth */}
+      <div className="mb-3 p-2.5 bg-surface-base/50 rounded-lg flex items-center justify-between">
+        <div>
+          <div className="text-[10px] text-text-dim mb-0.5">Net Worth</div>
+          <div className="text-xl font-bold text-text-bright">{fmtFull(data.netWorth)}</div>
         </div>
-      )}
-
-      {/* Due soon banner */}
-      {upcomingBills.length > 0 && (
-        <div className="mb-2">
-          <div className="text-[10px] font-medium text-signal-caution uppercase tracking-wider mb-1 flex items-center gap-1">
-            <Clock className="w-2.5 h-2.5" />
-            Due Soon
+        <div className="text-right">
+          <div className="text-[10px] text-text-dim mb-0.5">Assets / Liabilities</div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-signal-online">{fmt(data.totalAssets)}</span>
+            <span className="text-text-dim text-[10px]">/</span>
+            <span className="text-xs text-signal-alert">{fmt(data.totalLiabilities)}</span>
           </div>
+        </div>
+      </div>
+
+      {/* Accounts */}
+      <div className="space-y-1 mb-3">
+        {assets.length > 0 && (
+          <div className="text-[9px] text-text-dim uppercase tracking-wider mb-1">Assets</div>
+        )}
+        {assets.map(a => {
+          const Icon = ACCOUNT_ICON[a.type] ?? DollarSign;
+          return (
+            <div key={a.id} className="flex items-center gap-2 py-0.5">
+              <Icon className="w-3 h-3 text-signal-online flex-shrink-0" />
+              <span className="text-[11px] text-text-muted flex-1 truncate">{a.name}</span>
+              <span className="text-[11px] font-medium text-signal-online">{fmtFull(a.balance)}</span>
+            </div>
+          );
+        })}
+
+        {liabilities.length > 0 && (
+          <div className="text-[9px] text-text-dim uppercase tracking-wider mt-2 mb-1">Liabilities</div>
+        )}
+        {liabilities.map(a => {
+          const Icon = ACCOUNT_ICON[a.type] ?? CreditCard;
+          return (
+            <div key={a.id} className="flex items-center gap-2 py-0.5">
+              <Icon className="w-3 h-3 text-signal-alert flex-shrink-0" />
+              <span className="text-[11px] text-text-muted flex-1 truncate">{a.name}</span>
+              <span className="text-[11px] font-medium text-signal-alert">{fmtFull(a.balance)}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Recent transactions */}
+      {data.transactions.length > 0 && (
+        <div>
+          <div className="text-[9px] text-text-dim uppercase tracking-wider mb-1.5">Recent</div>
           <div className="space-y-0.5">
-            {upcomingBills.map((bill, i) => (
-              <div key={`upcoming-${i}`} className="flex items-center justify-between text-[11px] bg-signal-caution/5 rounded px-2 py-1 border border-signal-caution/10">
-                <span className="text-text-bright">{bill.provider}</span>
-                <div className="flex items-center gap-2">
-                  <span className="text-signal-primary telemetry-value">{bill.amount}</span>
-                  <span className="text-text-dim">{bill.dueDate}</span>
+            {data.transactions.slice(0, 5).map((t, i) => (
+              <div key={i} className="flex items-center justify-between gap-2 py-0.5">
+                <div className="flex-1 min-w-0">
+                  <span className="text-[11px] text-text-bright truncate block">{t.payee || t.category}</span>
+                  <span className="text-[9px] text-text-dim">{t.date} · {t.category}</span>
                 </div>
+                <span className={`text-[11px] font-medium flex-shrink-0 ${t.amount < 0 ? 'text-signal-alert' : 'text-signal-online'}`}>
+                  {t.amount < 0 ? '-' : '+'}{fmtFull(Math.abs(t.amount))}
+                </span>
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Category spend */}
+      {data.categorySpend.length > 0 && (
+        <div className="mt-3">
+          <div className="text-[9px] text-text-dim uppercase tracking-wider mb-1.5">This Month</div>
+          <div className="space-y-0.5">
+            {data.categorySpend.slice(0, 5).map((c, i) => {
+              const pct = c.budgeted > 0 ? Math.min((c.spent / c.budgeted) * 100, 100) : 0;
+              const over = c.budgeted > 0 && c.spent > c.budgeted;
+              return (
+                <div key={i}>
+                  <div className="flex items-center justify-between text-[10px] mb-0.5">
+                    <span className="text-text-muted truncate">{c.name}</span>
+                    <span className={over ? 'text-signal-alert' : 'text-text-dim'}>
+                      {fmtFull(c.spent)}{c.budgeted > 0 ? ` / ${fmtFull(c.budgeted)}` : ''}
+                    </span>
+                  </div>
+                  {c.budgeted > 0 && (
+                    <div className="h-0.5 bg-surface-hover rounded-full overflow-hidden mb-1">
+                      <div
+                        className={`h-full rounded-full ${over ? 'bg-signal-alert' : 'bg-signal-primary'}`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {data.unapproved > 0 && (
+        <div className="mt-2 text-[10px] text-signal-caution text-center">
+          {data.unapproved} unapproved transaction{data.unapproved > 1 ? 's' : ''} pending
         </div>
       )}
     </div>

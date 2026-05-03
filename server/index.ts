@@ -3628,6 +3628,28 @@ app.get('/api/agents/:agentId/reflections/:id', async (req, res) => {
   }
 });
 
+// ─── YNAB live finance snapshot ───
+
+const YNAB_SCRIPT = path.join(os.homedir(), 'finn', 'agent-dashboard', 'server', 'ynab_dashboard.py');
+const ynabCache = new Map<string, { data: unknown; ts: number }>();
+const YNAB_CACHE_TTL = 5 * 60_000;
+
+app.get('/api/agents/:agentId/ynab', async (req, res) => {
+  const { agentId } = req.params;
+  if (agentId !== 'finn') return res.status(404).json({ error: 'YNAB only available for finn' });
+  const cached = ynabCache.get('finn');
+  if (cached && Date.now() - cached.ts < YNAB_CACHE_TTL) return res.json(cached.data);
+  try {
+    const { stdout } = await execAsync(`python3 ${YNAB_SCRIPT}`, { timeout: 30000 });
+    const data = JSON.parse(stdout.trim());
+    if (data.error) return res.status(500).json({ error: data.error });
+    ynabCache.set('finn', { data, ts: Date.now() });
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? 'Failed to fetch YNAB data' });
+  }
+});
+
 // ─── Hermes Kanban (native agent task board via kanban.db) ───
 
 const KANBAN_QUERY_SCRIPT = path.join(os.homedir(), 'finn', 'agent-dashboard', 'server', 'kanban_query.py');
