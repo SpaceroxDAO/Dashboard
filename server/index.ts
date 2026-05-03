@@ -72,10 +72,27 @@ app.get('/api/health', (req, res) => {
 
 // ─── Health Data (Oura) ───
 
+// Health/Oura ingest stopped 2026-02-16 (the ingest cron lived on the
+// decommissioned macOS VM). Anything older than this threshold is presented as
+// "no recent data" rather than silently surfacing months-old numbers as "today".
+const HEALTH_STALE_DAYS = 7;
+
 app.get('/api/health-data', async (req, res) => {
   try {
     const files = await fs.readdir(HEALTH_PATH);
     const mdFiles = files.filter(f => f.endsWith('.md')).sort().reverse();
+
+    const latestFile = mdFiles[0];
+    const latestDate = latestFile?.replace('.md', '');
+    const ageMs = latestFile
+      ? Date.now() - new Date(latestDate).getTime()
+      : Infinity;
+    const ageDays = Number.isFinite(ageMs) ? Math.floor(ageMs / (24 * 60 * 60 * 1000)) : null;
+    const stale = ageDays !== null && ageDays > HEALTH_STALE_DAYS;
+
+    if (stale) {
+      return res.json({ data: [], stale: true, latestEntryDate: latestDate, ageDays, reason: 'Oura ingest pipeline not running on Hermes yet' });
+    }
 
     const healthRecords = await Promise.all(
       mdFiles.map(async (file) => {
@@ -84,7 +101,7 @@ app.get('/api/health-data', async (req, res) => {
       })
     );
 
-    res.json({ data: healthRecords });
+    res.json({ data: healthRecords, stale: false, latestEntryDate: latestDate, ageDays });
   } catch (error) {
     console.error('Health data error:', error);
     res.status(500).json({ error: 'Failed to read health data' });
@@ -205,14 +222,41 @@ function guessSkillCategory(name: string): string {
 
 // ─── Skill detail & toggle ───
 
+// Legacy file — toggle endpoint still writes here for now (Hermes' real
+// enable/disable lives in `hermes skills config`, which isn't programmatic).
 const SKILL_STATES_PATH = path.join(MEMORY_PATH, 'system', 'skill-states.json');
+const HERMES_SKILLS_SNAPSHOT_PATH = path.join(os.homedir(), '.hermes', '.skills_prompt_snapshot.json');
 
+/** Read enabled skill state. The canonical source is the Hermes prompt
+ *  snapshot — every skill present in the manifest is loaded into the agent's
+ *  prompt (i.e. enabled). The legacy skill-states.json layered an explicit
+ *  user-disable on top; we still honour those overrides. */
 async function readSkillStates(): Promise<Record<string, boolean>> {
+  const states: Record<string, boolean> = {};
+  // 1) Mark every skill in the Hermes manifest as enabled
+  try {
+    const raw = await fs.readFile(HERMES_SKILLS_SNAPSHOT_PATH, 'utf-8');
+    const snapshot = JSON.parse(raw);
+    const manifest = snapshot?.manifest;
+    if (manifest && typeof manifest === 'object') {
+      for (const key of Object.keys(manifest)) {
+        // Manifest keys look like "finn/<skill>/SKILL.md" or "<category>/<skill>/SKILL.md"
+        const match = key.match(/^(?:finn\/)?([^/]+)\/SKILL\.md$/);
+        if (match) states[match[1]] = true;
+      }
+    }
+  } catch { /* snapshot missing — fall back to legacy file below */ }
+
+  // 2) Layer the legacy explicit disables on top
   try {
     const content = await fs.readFile(SKILL_STATES_PATH, 'utf-8');
-    return JSON.parse(content);
+    const legacy = JSON.parse(content);
+    for (const [k, v] of Object.entries(legacy as Record<string, boolean>)) {
+      if (v === false) states[k] = false;
+    }
+    return states;
   } catch {
-    return {};
+    return states;  // legacy file missing is fine — Hermes manifest already populated
   }
 }
 
@@ -836,6 +880,49 @@ function readCronJobs(data: unknown): CronEntry[] {
     arr = (data as any).jobs;
   }
   return arr.map(normalizeHermesJob);
+}
+
+/** Compute Finn's cron health LIVE from the Hermes jobs.json (formerly read from
+ *  a stale cron-health-alerts.json that was last written 2026-03-01). Returns the
+ *  shape Settings.tsx and SystemStatus.tsx render: alert, failures, zombies,
+ *  stalled, never_run, message. */
+async function computeFinnCronHealth(): Promise<{ alert: boolean; failures: number; zombies: number; stalled: number; never_run: number; message: string; lastUpdated: string }> {
+  const data = await readJsonFile(FINN_LIVE_CRONS_PATH);
+  const empty = { alert: false, failures: 0, zombies: 0, stalled: 0, never_run: 0, message: 'OK', lastUpdated: new Date().toISOString() };
+  if (!data || typeof data !== 'object') return empty;
+  const jobs = Array.isArray((data as any).jobs) ? (data as any).jobs : [];
+
+  let failures = 0;
+  let neverRun = 0;
+  let stalled = 0;
+  const nowMs = Date.now();
+  for (const j of jobs) {
+    if (j?.enabled === false) continue;
+    const lastStatus = j?.last_status;
+    const lastError = j?.last_error;
+    const lastRunAt = j?.last_run_at;
+    const nextRunAt = j?.next_run_at;
+
+    if (lastError || lastStatus === 'error' || lastStatus === 'failed') {
+      failures++;
+    } else if (!lastRunAt) {
+      neverRun++;
+    }
+
+    // Stalled: scheduled to have already run >2h ago but still pending
+    if (nextRunAt) {
+      const nextMs = new Date(nextRunAt).getTime();
+      if (!Number.isNaN(nextMs) && nextMs < nowMs - 2 * 60 * 60 * 1000) {
+        stalled++;
+      }
+    }
+  }
+
+  const alert = failures > 0 || stalled > 0;
+  const message = alert
+    ? [failures && `${failures} failing`, stalled && `${stalled} stalled`].filter(Boolean).join(', ')
+    : 'OK';
+  return { alert, failures, zombies: 0, stalled, never_run: neverRun, message, lastUpdated: new Date().toISOString() };
 }
 
 function everyMsToHumanReadable(ms: number): string {
@@ -1463,14 +1550,13 @@ app.get('/api/system-info', async (req, res) => {
   try {
     const [
       scriptEntries, skillEntries, memoryFiles, cronsData,
-      healthAlerts, tokenStatusContent, checkpointContent,
+      healthAlerts, checkpointContent,
     ] = await Promise.all([
       fs.readdir(SCRIPTS_PATH).catch(() => []),
       fs.readdir(SKILLS_PATH, { withFileTypes: true }).catch(() => []),
       getAllMemoryFilesRecursive({ excludeArchive: true }).catch(() => []),
       readJsonFile(FINN_LIVE_CRONS_PATH).then(v => v || readJsonFile(FINN_WORKSPACE_CRONS_PATH)),
-      readJsonFile(path.join(MEMORY_PATH, 'cron-health-alerts.json')),
-      readMdFile(path.join(MEMORY_PATH, 'system', 'token-status.md')),
+      computeFinnCronHealth(),
       readMdFile(path.join(MEMORY_PATH, 'checkpoint.md')),
     ]);
 
@@ -1478,7 +1564,7 @@ app.get('/api/system-info', async (req, res) => {
     const skillCount = (skillEntries as any[]).filter((e: any) => e.isDirectory?.()).length;
     const cronJobs = readCronJobs(cronsData);
     const cronCount = cronJobs.length;
-    const tokenStatus = tokenStatusContent ? parseTokenStatus(tokenStatusContent) : null;
+    const tokenStatus = getHermesTokenStatus();
 
     // Check Kira connectivity — both agents are local now, check if gateway responds
     let kiraOnline = false;
@@ -1549,7 +1635,7 @@ app.get('/api/system-info', async (req, res) => {
         { name: 'LinkedIn', status: 'active', description: 'Job opportunity monitoring' },
         { name: 'Spotify', status: 'inactive', description: 'Music playback control' },
       ],
-      cronHealth: healthAlerts || { alert: false, failures: 0, zombies: 0, stalled: 0, never_run: 0, message: 'OK' },
+      cronHealth: healthAlerts,
       tokenStatus,
     });
   } catch (error) {
@@ -1631,6 +1717,25 @@ function parseTokenStatus(content: string) {
     model: modelMatch?.[1]?.trim() || '',
     session: sessionMatch?.[1]?.trim() || '',
     compactions: compactionsMatch ? parseInt(compactionsMatch[1]) : 0,
+  };
+}
+
+/** Honest token status for Finn on Hermes/GPT-5.5/Codex OAuth.
+ *  ChatGPT Pro is subscription-billed, not per-token, so daily/weekly budgets
+ *  and context-window usage aren't exposed by the upstream — the frontend's
+ *  `|| 'N/A'` fallbacks render those gracefully. Replaces a token-status.md
+ *  file the old macOS launchd job stopped writing on 2026-04-18. */
+function getHermesTokenStatus() {
+  return {
+    lastUpdated: new Date().toISOString(),
+    dailyRemaining: '',
+    weeklyRemaining: '',
+    contextWindow: '',
+    model: 'GPT-5.5',
+    provider: 'OpenAI Codex (ChatGPT Pro)',
+    session: '',
+    compactions: 0,
+    subscription: true,
   };
 }
 
@@ -1739,10 +1844,10 @@ app.get('/api/dashboard', async (req, res) => {
       readJsonFile(path.join(MEMORY_PATH, 'insights.json')),
       readJsonFile(path.join(MEMORY_PATH, 'social-battery.json')),
       readJsonFile(path.join(MEMORY_PATH, 'habits', 'streaks.json')),
-      readJsonFile(path.join(MEMORY_PATH, 'cron-health-alerts.json')),
+      computeFinnCronHealth(),
       readJsonFile(path.join(MEMORY_PATH, 'current-mode.json')),
       readJsonFile(path.join(MEMORY_PATH, 'ideas.json')),
-      readMdFile(path.join(MEMORY_PATH, 'system', 'token-status.md')),
+      Promise.resolve(null),  // tokenStatusContent — replaced by getHermesTokenStatus() below
       readJsonFile(path.join(MEMORY_PATH, 'finance', 'daily-recap.json')),
       readJsonFile(path.join(MEMORY_PATH, 'health', 'oura-data.json')),
       readJsonFile(path.join(MEMORY_PATH, 'finance', 'net-worth-history.json')),
@@ -1851,7 +1956,8 @@ app.get('/api/dashboard', async (req, res) => {
     const scriptFiles = (scriptEntries as string[]).filter(f => f.endsWith('.sh') || f.endsWith('.py') || f.endsWith('.js'));
 
     // Parse markdown data sources
-    const tokenStatus = tokenStatusContent ? parseTokenStatus(tokenStatusContent) : null;
+    void tokenStatusContent; // legacy, unused — see getHermesTokenStatus()
+    const tokenStatus = getHermesTokenStatus();
     // Transform finance recap into bills format for FinanceWidget
     const bills = (() => {
       if (!billsContent) return [];
@@ -3018,6 +3124,11 @@ app.get('/api/visual-reports', async (req, res) => {
 // ─── Reports API ───
 const REPORTS_PATH = path.join(MEMORY_PATH, 'reports');
 
+// Reports / daily-recap files stopped writing 2026-04-18 when Finn moved off the
+// macOS VM. Without an active producer, surfacing months-old reports as "recent"
+// is misleading — return an empty list past this threshold.
+const REPORTS_STALE_DAYS = 30;
+
 app.get('/api/reports', async (req, res) => {
   try {
     const files = await fs.readdir(REPORTS_PATH).catch(() => []);
@@ -3031,9 +3142,14 @@ app.get('/api/reports', async (req, res) => {
         }
       })
     );
-    res.json(reports.filter(Boolean).sort((a, b) => 
+    const sorted = reports.filter(Boolean).sort((a, b) =>
       new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    ));
+    );
+    const latestMs = sorted[0]?.createdAt ? new Date(sorted[0].createdAt).getTime() : 0;
+    const ageDays = latestMs ? Math.floor((Date.now() - latestMs) / (24 * 60 * 60 * 1000)) : null;
+    const stale = ageDays !== null && ageDays > REPORTS_STALE_DAYS;
+    if (stale) return res.json([]);
+    res.json(sorted);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch reports' });
   }
