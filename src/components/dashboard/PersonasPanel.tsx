@@ -138,7 +138,7 @@ function PersonaCard({ persona, isActive, activating, onActivate }: PersonaCardP
 
 export function PersonasPanel() {
   const [activeAgent] = useAtom(activeAgentAtom);
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const [activePersonaId, setActivePersonaId] = useState<string | null>(null);
   const [activatedAt, setActivatedAt] = useState<string | null>(null);
   const [activating, setActivating] = useState(false);
